@@ -16,7 +16,9 @@ venv/
 .pytest_cache/
 .coverage
 htmlcov/
+.stfolder/
 
 # IDE
 .vscode/
 .idea/
+.claude/
