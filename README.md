@@ -85,6 +85,14 @@ Returns `True` if a `BLEDevice` and `AdvertisementData` match a Casper Glow (by 
 | `HandshakeTimeoutError` | Device did not become ready in time |
 | `CommandError` | Failed to send a command |
 
+## Examples
+
+See the [`examples/`](examples/) directory for runnable scripts. To discover nearby Casper Glow lights and turn them on:
+
+```bash
+python examples/discover_and_turn_on.py
+```
+
 ## Development
 
 ```bash
