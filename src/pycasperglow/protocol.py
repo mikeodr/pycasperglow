@@ -83,7 +83,13 @@ def extract_token_from_notify(payload: bytes) -> int | None:
 def build_action_packet(token: int, action_body: bytes) -> bytes:
     """Build a full command packet from a session token and action body.
 
-    Packet structure: header (field 1 varint = token) + action body.
+    Packet structure (protobuf-like):
+      field 1 (varint) = 1           (constant, tag 0x08)
+      field 2 (varint) = token       (session token, tag 0x10)
+      field 4 (length-delimited) = action_body  (tag 0x22)
     """
-    # Field 1, wire type 0 (varint) -> tag byte = 0x08
-    return b"\x08" + encode_varint(token) + action_body
+    return (
+        b"\x08\x01"
+        + b"\x10" + encode_varint(token)
+        + b"\x22" + encode_varint(len(action_body)) + action_body
+    )

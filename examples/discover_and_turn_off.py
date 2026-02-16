@@ -26,7 +26,7 @@ async def main() -> None:
         glow = CasperGlow(dev)
         _LOGGER.info("Turning on %s (%s)...", dev.name, dev.address)
         try:
-            await glow.turn_on()
+            await glow.turn_off()
             _LOGGER.info("  Success.")
         except Exception:
             _LOGGER.exception("  Failed to turn on %s", dev.address)
