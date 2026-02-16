@@ -118,16 +118,18 @@ class TestBuildActionPacket:
         from pycasperglow.const import ACTION_BODY_ON
 
         packet = build_action_packet(42, ACTION_BODY_ON)
-        # tag 0x08 + varint(42)=0x2a + ON body
-        assert packet == b"\x08\x2a" + ACTION_BODY_ON
+        # field1=1, field2=token(42), field4=len-delimited(ON body)
+        expected = b"\x08\x01\x10\x2a\x22\x04" + ACTION_BODY_ON
+        assert packet == expected
 
     def test_build_off(self) -> None:
         from pycasperglow.const import ACTION_BODY_OFF
 
         packet = build_action_packet(42, ACTION_BODY_OFF)
-        assert packet == b"\x08\x2a" + ACTION_BODY_OFF
+        expected = b"\x08\x01\x10\x2a\x22\x04" + ACTION_BODY_OFF
+        assert packet == expected
 
     def test_large_token(self) -> None:
         packet = build_action_packet(300, b"\x1a\x02\x08\x02")
-        # tag 0x08 + varint(300)=\xac\x02
-        assert packet[:3] == b"\x08\xac\x02"
+        # field1=0x08 0x01, field2=0x10 + varint(300)=\xac\x02
+        assert packet[:5] == b"\x08\x01\x10\xac\x02"
