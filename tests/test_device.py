@@ -10,6 +10,10 @@ import pytest
 from pycasperglow.const import (
     ACTION_BODY_OFF,
     ACTION_BODY_ON,
+    ACTION_BODY_PAUSE,
+    ACTION_BODY_RESUME,
+    BRIGHTNESS_TO_ACTION,
+    DIMMING_TIME_TO_ACTION,
     READ_CHAR_UUID,
     RECONNECT_PACKET,
     WRITE_CHAR_UUID,
@@ -149,3 +153,67 @@ class TestCasperGlow:
         glow = CasperGlow(device)
         assert glow.name == "JarTest"
         assert glow.address == "11:22:33:44:55:66"
+
+    async def test_pause_sends_correct_packet(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client(ready_token=42)
+        glow = CasperGlow(device, client=client)
+
+        await glow.pause()
+
+        calls = client.write_gatt_char.call_args_list
+        expected = build_action_packet(42, ACTION_BODY_PAUSE)
+        assert calls[1].args == (WRITE_CHAR_UUID, expected)
+        assert glow.state.is_paused is True
+
+    async def test_resume_sends_correct_packet(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client(ready_token=42)
+        glow = CasperGlow(device, client=client)
+
+        await glow.resume()
+
+        calls = client.write_gatt_char.call_args_list
+        expected = build_action_packet(42, ACTION_BODY_RESUME)
+        assert calls[1].args == (WRITE_CHAR_UUID, expected)
+        assert glow.state.is_paused is False
+
+    async def test_pause_fires_callback(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client()
+        glow = CasperGlow(device, client=client)
+        states: list[Any] = []
+        glow.register_callback(lambda s: states.append(s))
+
+        await glow.pause()
+
+        assert len(states) == 1
+        assert states[0].is_paused is True
+
+    async def test_resume_fires_callback(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client()
+        glow = CasperGlow(device, client=client)
+        states: list[Any] = []
+        glow.register_callback(lambda s: states.append(s))
+
+        await glow.resume()
+
+        assert len(states) == 1
+        assert states[0].is_paused is False
+
+    async def test_set_dimming_time_not_implemented(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client()
+        glow = CasperGlow(device, client=client)
+
+        with pytest.raises(NotImplementedError):
+            await glow.set_dimming_time(30)
+
+    async def test_set_brightness_not_implemented(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client()
+        glow = CasperGlow(device, client=client)
+
+        with pytest.raises(NotImplementedError):
+            await glow.set_brightness(3)
