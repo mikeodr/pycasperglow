@@ -5,9 +5,27 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pycasperglow"
 version = "0.1.0"
+authors = [
+    { name = "Mike O'Driscoll" },
+]
 description = "Async Python library for controlling Casper Glow lights via BLE"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICEN[CS]E*"]
+keywords = ["casper", "glow", "ble", "bluetooth", "home-assistant", "smart-home"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Topic :: Home Automation",
+    "Typing :: Typed",
+    "Framework :: AsyncIO",
+]
 dependencies = [
     "bleak>=0.21.0",
     "bleak-retry-connector>=3.0.0",
@@ -21,6 +39,11 @@ dev = [
     "mypy",
     "ruff",
 ]
+
+[project.urls]
+Homepage = "https://github.com/mikeodr/pycasperglow"
+Repository = "https://github.com/mikeodr/pycasperglow"
+Issues = "https://github.com/mikeodr/pycasperglow/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
