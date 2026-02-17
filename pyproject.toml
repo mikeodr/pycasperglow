@@ -47,6 +47,9 @@ Changelog = "https://github.com/mikeodr/pycasperglow/blob/main/CHANGELOG.md"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+pycasperglow = ["py.typed"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
