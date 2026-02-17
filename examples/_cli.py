@@ -37,6 +37,20 @@ def build_parser(description: str) -> argparse.ArgumentParser:
     return parser
 
 
+def matches_filter(dev: BLEDevice, args: argparse.Namespace) -> bool:
+    """Return True if a single device matches the CLI filter flags.
+
+    When both --name and --address are given, the device must match both.
+    """
+    if args.name is not None:
+        dev_name = (dev.name or "").lower()
+        if not fnmatch.fnmatch(dev_name, args.name.lower()):
+            return False
+    return args.address is None or fnmatch.fnmatch(
+        dev.address.upper(), args.address.upper()
+    )
+
+
 def filter_devices(
     devices: list[BLEDevice], args: argparse.Namespace
 ) -> list[BLEDevice]:
@@ -44,15 +58,4 @@ def filter_devices(
 
     When both --name and --address are given, a device must match both.
     """
-    result: list[BLEDevice] = []
-    for dev in devices:
-        if args.name is not None:
-            dev_name = (dev.name or "").lower()
-            if not fnmatch.fnmatch(dev_name, args.name.lower()):
-                continue
-        if args.address is not None and not fnmatch.fnmatch(
-            dev.address.upper(), args.address.upper()
-        ):
-            continue
-        result.append(dev)
-    return result
+    return [dev for dev in devices if matches_filter(dev, args)]

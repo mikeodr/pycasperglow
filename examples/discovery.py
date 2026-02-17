@@ -4,7 +4,7 @@
 import asyncio
 import logging
 
-from _cli import build_parser, filter_devices
+from _cli import build_parser, matches_filter
 
 from pycasperglow import CasperGlow, discover_glows
 
@@ -23,24 +23,14 @@ async def main() -> None:
     args = parser.parse_args()
 
     _LOGGER.info("Scanning for Casper Glow lights (%.0fs)...", args.timeout)
-    devices = await discover_glows(timeout=args.timeout)
+    found = 0
+    async for dev in discover_glows(timeout=args.timeout):
+        if not matches_filter(dev, args):
+            continue
+        found += 1
+        _LOGGER.info("Found: %s (%s)", dev.name, dev.address)
 
-    if not devices:
-        _LOGGER.info("No Casper Glow lights found.")
-        return
-
-    devices = filter_devices(devices, args)
-
-    if not devices:
-        _LOGGER.info("No devices matched the given filter(s).")
-        return
-
-    _LOGGER.info("Found %d light(s):", len(devices))
-    for dev in devices:
-        _LOGGER.info("  %s (%s)", dev.name, dev.address)
-
-    if args.state:
-        for dev in devices:
+        if args.state:
             glow = CasperGlow(dev)
             _LOGGER.info("Querying state for %s (%s)...", dev.name, dev.address)
             try:
@@ -55,6 +45,9 @@ async def main() -> None:
                 _LOGGER.info("  Dimming time: %s", _fmt(state.dimming_time_minutes))
             except Exception:
                 _LOGGER.exception("  Failed to query state for %s", dev.address)
+
+    if not found:
+        _LOGGER.info("No Casper Glow lights found.")
 
 
 def _fmt(
