@@ -1,6 +1,11 @@
 """pycasperglow - Async Python library for Casper Glow lights."""
 
-from .const import DEVICE_NAME_PREFIX, DIMMING_TIME_MINUTES, SERVICE_UUID
+from .const import (
+    BRIGHTNESS_LEVELS,
+    DEVICE_NAME_PREFIX,
+    DIMMING_TIME_MINUTES,
+    SERVICE_UUID,
+)
 from .device import CasperGlow, GlowState
 from .discovery import discover_glows, is_casper_glow
 from .exceptions import (
@@ -11,6 +16,7 @@ from .exceptions import (
 )
 
 __all__ = [
+    "BRIGHTNESS_LEVELS",
     "CasperGlow",
     "CasperGlowError",
     "CommandError",

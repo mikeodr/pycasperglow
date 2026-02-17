@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-16
+
+### Added
+
+- State query support via `query_state()` — decodes power, paused, dimming time, and battery level from BLE notifications.
+- `build_brightness_body()` protocol function for constructing verified brightness/dimming command packets (protobuf field 18).
+- `set_brightness()` — set brightness percentage (60, 70, 80, 90, 100), verified against iOS app BLE captures.
+- `set_dimming_time()` — set dimming time (15, 30, 45, 60, 90 minutes), verified against iOS app BLE captures.
+- `battery_level` field on `GlowState` (parsed from sub-field 8 of state response).
+- `raw_state` field on `GlowState` for storing the raw notification bytes.
+- `BRIGHTNESS_LEVELS` constant exported from the package.
+- Generic protobuf field parser (`parse_protobuf_fields()`) and state response decoder (`parse_state_response()`) in protocol module.
+- `discovery.py` example script with `--state` flag for querying device state.
+- Shared CLI helpers (`examples/_cli.py`) with `--timeout`, `--name`, and `--address` filter flags.
+- `debug/capture_notifications.py` tool for dumping decoded BLE notifications.
+
+### Changed
+
+- All example scripts now use shared CLI flags (`--timeout`, `--name`, `--address`) for filtering devices.
+- `set_brightness()` now accepts percentage values (60–100) instead of levels (1–5).
+
+### Removed
+
+- Unverified brightness and dimming time constants (`ACTION_BODY_DIM_*`, `ACTION_BODY_BRIGHTNESS_*`, `DIMMING_TIME_TO_ACTION`, `BRIGHTNESS_TO_ACTION`) replaced with capture-verified protocol implementation.
+
+### Fixed
+
+- Copy-paste bug in `discover_and_turn_off.py` (was logging "turning on" messages).
+
 ## [0.2.1] - 2026-02-16
 
 ### Fixed
@@ -39,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for external `BleakClient` (Home Assistant integration).
 - Typed package with `py.typed` marker.
 
+[0.3.0]: https://github.com/mikeodr/pycasperglow/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mikeodr/pycasperglow/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mikeodr/pycasperglow/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mikeodr/pycasperglow/releases/tag/v0.1.0

@@ -14,14 +14,18 @@ from bleak_retry_connector import establish_connection
 
 from .const import (
     HANDSHAKE_TIMEOUT,
+    QUERY_STATE_BODY,
     READ_CHAR_UUID,
     RECONNECT_PACKET,
+    STATE_RESPONSE_TIMEOUT,
     WRITE_CHAR_UUID,
 )
 from .exceptions import CommandError, HandshakeTimeoutError
 from .protocol import (
     build_action_packet,
+    build_brightness_body,
     extract_token_from_notify,
+    parse_state_response,
     payload_contains_ready_marker,
 )
 
@@ -34,8 +38,10 @@ class GlowState:
 
     is_on: bool | None = None
     brightness_level: int | None = None
+    battery_level: int | None = None
     dimming_time_minutes: int | None = None
     is_paused: bool | None = None
+    raw_state: bytes | None = None
 
 
 class CasperGlow:
@@ -97,13 +103,45 @@ class CasperGlow:
         Returns True if the notification contained state data and the
         state was updated, False otherwise.
 
-        TODO: Decode the actual BLE notification format once the protocol
-        for state reporting is captured. The Glow device is known to
-        report state via BLE notifications, but the payload format has
-        not yet been reverse-engineered.
+        The device reports state in protobuf field 19 (nested inside
+        field 4 of the notification).  The field-19 inner sub-fields:
+
+        * sub-field 1: power/mode indicator (1 = on, 3 = off)
+        * sub-field 3: remaining dimming time in milliseconds (0 when off)
+        * sub-field 4: paused indicator (0 = not paused, 1 = paused)
+        * sub-field 8: battery percentage (always 100 in captures)
         """
-        _ = data
-        return False
+        state_fields = parse_state_response(data)
+        if state_fields is None:
+            return False
+
+        self._state.raw_state = data
+
+        # Sub-field 1: power/mode indicator (1 = on, 3 = off)
+        sf1 = state_fields.get(1)
+        if sf1 is not None and isinstance(sf1[0], int):
+            self._state.is_on = sf1[0] == 1
+            if not self._state.is_on:
+                self._state.is_paused = False
+
+        # Sub-field 3: remaining dimming time in milliseconds
+        sf3 = state_fields.get(3)
+        if sf3 is not None and isinstance(sf3[0], int):
+            self._state.dimming_time_minutes = sf3[0] // 60_000
+
+        # Sub-field 4: paused indicator (0 = not paused, 1 = paused)
+        sf4 = state_fields.get(4)
+        if sf4 is not None and isinstance(sf4[0], int):
+            self._state.is_paused = sf4[0] != 0
+
+        # Sub-field 8: battery percentage (always 100 in captures).
+        # Brightness is not reported in the state query response.
+        sf8 = state_fields.get(8)
+        if sf8 is not None and isinstance(sf8[0], int):
+            self._state.battery_level = sf8[0]
+
+        _LOGGER.debug("Parsed state from notification: %s", self._state)
+        return True
 
     async def handshake(self) -> None:
         """Test connectivity by performing the handshake without sending a command.
@@ -169,22 +207,42 @@ class CasperGlow:
     async def set_dimming_time(self, minutes: int) -> None:
         """Set the dimming time in minutes.
 
-        Not yet implemented — action bytes have not been validated
-        against real device captures.
+        Valid values: 15, 30, 45, 60, 90.  The dimming time is sent
+        alongside the current brightness.  If brightness is unknown,
+        100 (maximum) is used as the default.
         """
-        raise NotImplementedError(
-            "set_dimming_time is not yet validated against device captures"
-        )
+        from .const import BRIGHTNESS_LEVELS, DIMMING_TIME_MINUTES
+
+        if minutes not in DIMMING_TIME_MINUTES:
+            raise ValueError(
+                f"Invalid dimming time {minutes}; "
+                f"must be one of {DIMMING_TIME_MINUTES}"
+            )
+        brightness = self._state.brightness_level or BRIGHTNESS_LEVELS[-1]
+        body = build_brightness_body(brightness, minutes * 60_000)
+        await self._execute_command(body)
+        self._state.dimming_time_minutes = minutes
+        self._fire_callbacks()
 
     async def set_brightness(self, level: int) -> None:
-        """Set brightness level (1-5).
+        """Set brightness percentage.
 
-        Not yet implemented — action bytes have not been validated
-        against real device captures.
+        Valid values: 60, 70, 80, 90, 100 (matching iOS app levels 1-5).
+        The brightness command also includes the current dimming time.
+        If the dimming time is unknown, 15 minutes is used as the default.
         """
-        raise NotImplementedError(
-            "set_brightness is not yet validated against device captures"
-        )
+        from .const import BRIGHTNESS_LEVELS, DIMMING_TIME_MINUTES
+
+        if level not in BRIGHTNESS_LEVELS:
+            raise ValueError(
+                f"Invalid brightness {level}; "
+                f"must be one of {BRIGHTNESS_LEVELS}"
+            )
+        dim_min = self._state.dimming_time_minutes or DIMMING_TIME_MINUTES[0]
+        body = build_brightness_body(level, dim_min * 60_000)
+        await self._execute_command(body)
+        self._state.brightness_level = level
+        self._fire_callbacks()
 
     async def _execute_command(self, action_body: bytes) -> None:
         """Connect, handshake, send command, disconnect."""
@@ -227,3 +285,63 @@ class CasperGlow:
         finally:
             if self._external_client is None:
                 await client.disconnect()
+
+    async def query_state(self) -> GlowState:
+        """Query the device for its current state.
+
+        Connects, performs the handshake, sends a state query command,
+        waits for the state response notification, and returns the
+        updated GlowState.
+        """
+        ready_event = asyncio.Event()
+        state_event = asyncio.Event()
+        token: int | None = None
+
+        def _on_notify(_sender: Any, data: bytearray) -> None:
+            nonlocal token
+            _LOGGER.debug("Notification: %s", data.hex())
+            if self._parse_state_notification(bytes(data)):
+                state_event.set()
+            if payload_contains_ready_marker(bytes(data)):
+                extracted = extract_token_from_notify(bytes(data))
+                if extracted is not None:
+                    token = extracted
+                    ready_event.set()
+
+        client = self._external_client or await establish_connection(
+            BleakClient, self._ble_device, self._ble_device.address
+        )
+        try:
+            if not client.is_connected:
+                await client.connect()
+
+            await client.start_notify(READ_CHAR_UUID, _on_notify)
+            await client.write_gatt_char(WRITE_CHAR_UUID, RECONNECT_PACKET)
+
+            try:
+                await asyncio.wait_for(ready_event.wait(), HANDSHAKE_TIMEOUT)
+            except TimeoutError as err:
+                raise HandshakeTimeoutError(
+                    f"Device did not become ready within {HANDSHAKE_TIMEOUT}s"
+                ) from err
+
+            if token is None:
+                raise CommandError("Ready marker seen but no token extracted")
+
+            packet = build_action_packet(token, QUERY_STATE_BODY)
+            await client.write_gatt_char(WRITE_CHAR_UUID, packet)
+            _LOGGER.debug("Sent state query: %s", packet.hex())
+
+            try:
+                await asyncio.wait_for(
+                    state_event.wait(), STATE_RESPONSE_TIMEOUT
+                )
+            except TimeoutError:
+                _LOGGER.warning("State response timeout — returning cached state")
+
+            self._fire_callbacks()
+        finally:
+            if self._external_client is None:
+                await client.disconnect()
+
+        return self._state

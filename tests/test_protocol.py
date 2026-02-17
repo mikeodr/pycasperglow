@@ -4,8 +4,11 @@ import pytest
 
 from pycasperglow.protocol import (
     build_action_packet,
+    build_brightness_body,
     encode_varint,
     extract_token_from_notify,
+    parse_protobuf_fields,
+    parse_state_response,
     parse_varint,
     payload_contains_ready_marker,
 )
@@ -133,3 +136,233 @@ class TestBuildActionPacket:
         packet = build_action_packet(300, b"\x1a\x02\x08\x02")
         # field1=0x08 0x01, field2=0x10 + varint(300)=\xac\x02
         assert packet[:5] == b"\x08\x01\x10\xac\x02"
+
+
+class TestParseProtobufFields:
+    """Generic protobuf field parser tests."""
+
+    def test_single_varint_field(self) -> None:
+        # field 1, varint = 42
+        data = b"\x08\x2a"
+        fields = parse_protobuf_fields(data)
+        assert fields == {1: [42]}
+
+    def test_multiple_varint_fields(self) -> None:
+        # field 1 = 1, field 2 = 5
+        data = b"\x08\x01\x10\x05"
+        fields = parse_protobuf_fields(data)
+        assert fields == {1: [1], 2: [5]}
+
+    def test_length_delimited_field(self) -> None:
+        # field 4, length-delimited, 4 bytes
+        body = bytes.fromhex("1a020802")
+        data = b"\x22\x04" + body
+        fields = parse_protobuf_fields(data)
+        assert fields == {4: [body]}
+
+    def test_mixed_fields(self) -> None:
+        # field 1 = token (varint), field 2 = 1 (varint), field 14 = ready marker body
+        data = b"\x08\x2a\x10\x01\x72\x02\x08\x00"
+        fields = parse_protobuf_fields(data)
+        assert fields[1] == [42]
+        assert fields[2] == [1]
+        assert fields[14] == [b"\x08\x00"]
+
+    def test_repeated_field(self) -> None:
+        # field 1 appears twice
+        data = b"\x08\x01\x08\x02"
+        fields = parse_protobuf_fields(data)
+        assert fields == {1: [1, 2]}
+
+    def test_empty_payload(self) -> None:
+        assert parse_protobuf_fields(b"") == {}
+
+    def test_truncated_varint(self) -> None:
+        # Continuation bit set but no next byte
+        fields = parse_protobuf_fields(b"\x08\x80")
+        assert fields == {}
+
+    def test_truncated_length_delimited(self) -> None:
+        # field 4, claims 10 bytes but only 2 available
+        data = b"\x22\x0a\xab\xcd"
+        fields = parse_protobuf_fields(data)
+        assert fields == {}
+
+    def test_notification_with_ready_marker(self) -> None:
+        """Parse a realistic notification with token + ready marker."""
+        payload = b"\x08\x96\x01" + bytes.fromhex("72020800")
+        fields = parse_protobuf_fields(payload)
+        assert fields[1] == [150]
+        assert fields[14] == [b"\x08\x00"]
+
+
+class TestParseStateResponse:
+    """State response parsing tests."""
+
+    def _make_state_notification(
+        self, state_body: bytes, token: int = 42
+    ) -> bytes:
+        """Build a notification with field 1 (token) and field 4 wrapping field 19."""
+        from pycasperglow.protocol import STATE_RESPONSE_FIELD
+
+        tag_19 = (STATE_RESPONSE_FIELD << 3) | 2  # wire type 2
+        field4_body = (
+            encode_varint(tag_19) + encode_varint(len(state_body)) + state_body
+        )
+        return (
+            b"\x08" + encode_varint(token)
+            + b"\x22" + encode_varint(len(field4_body)) + field4_body
+        )
+
+    def test_extracts_field_19(self) -> None:
+        # state body: sub-field 1 = 3 (response type), sub-field 3 = 0 (off)
+        state_body = b"\x08\x03\x18\x00"
+        notification = self._make_state_notification(state_body)
+
+        result = parse_state_response(notification)
+        assert result is not None
+        assert result[1] == [3]
+        assert result[3] == [0]
+
+    def test_returns_none_without_field_19(self) -> None:
+        # Just a token field, no field 4
+        notification = b"\x08\x2a"
+        assert parse_state_response(notification) is None
+
+    def test_off_state(self) -> None:
+        # sub-field 3 = 0 → OFF, sub-field 8 = 100 (battery)
+        state_body = b"\x08\x03\x18\x00\x40\x64"
+        notification = self._make_state_notification(state_body)
+
+        result = parse_state_response(notification)
+        assert result is not None
+        assert result[3] == [0]
+        assert result[8] == [100]  # battery
+
+    def test_on_state(self) -> None:
+        # sf1 = 1 → ON, sf3 = 900000 (dim time), sf8 = 80 (battery)
+        state_body = (
+            b"\x08\x01"  # sf1 = 1 (on)
+            + b"\x18\xa0\xf76"  # sf3 = 900000
+            + b"\x40\x50"  # sf8 = 80 (battery)
+        )
+        notification = self._make_state_notification(state_body)
+
+        result = parse_state_response(notification)
+        assert result is not None
+        assert result[1] == [1]
+        assert result[3] == [900000]
+        assert result[8] == [80]  # battery
+
+    def test_empty_payload(self) -> None:
+        assert parse_state_response(b"") is None
+
+    def test_field4_without_field19(self) -> None:
+        # field 4 body has no field 19 → returns None
+        field4_body = b"\x08\x03"  # just sub-field 1
+        notification = (
+            b"\x08\x2a"
+            + b"\x22" + encode_varint(len(field4_body)) + field4_body
+        )
+        assert parse_state_response(notification) is None
+
+    def test_real_device_off_notification(self) -> None:
+        """Parse the actual notification captured from a real Glow device."""
+        raw = bytes.fromhex(
+            "08f091b04310011891a0e78c01"
+            "22179a01140803100018002000"
+            "280030003a04080010064064"
+        )
+        result = parse_state_response(raw)
+        assert result is not None
+        assert result[1] == [3]   # power/mode: off
+        assert result[3] == [0]   # remaining dim time: 0 ms
+        assert result[8] == [100]  # battery: 100%
+
+    def test_real_device_on_notification(self) -> None:
+        """Parse the actual ON-state notification from a real Glow device."""
+        raw = bytes.fromhex(
+            "08c392b043100118aac89c15"
+            "221b9a0118080110dbc20418"
+            "a0f7362000280030003a0408"
+            "0310064064"
+        )
+        result = parse_state_response(raw)
+        assert result is not None
+        assert result[1] == [1]       # power/mode: on
+        assert result[3] == [900000]  # remaining dim time: 900 000 ms = 15 min
+        assert result[4] == [0]       # paused: no
+        assert result[8] == [100]     # battery: 100%
+
+    def test_real_device_paused_notification(self) -> None:
+        """Parse the actual PAUSED-state notification from a real Glow device."""
+        raw = bytes.fromhex(
+            "08f091b0431001189fb7e0cd07"
+            "221b9a01180801109cba0a18"
+            "a0f7362001280030003a0408"
+            "0010064064"
+        )
+        result = parse_state_response(raw)
+        assert result is not None
+        assert result[1] == [1]       # power/mode: on
+        assert result[3] == [900000]  # remaining dim time: 900 000 ms = 15 min
+        assert result[4] == [1]       # paused: yes
+        assert result[8] == [100]     # battery: 100%
+
+
+class TestBuildBrightnessBody:
+    """Brightness body construction tests.
+
+    Verified against iOS app BLE captures.
+    """
+
+    def test_brightness_90_dimming_15min(self) -> None:
+        """Match captured brightness=90%, dimming=15min packet."""
+        body = build_brightness_body(90, 900_000)
+        # field 18 tag (9201) + length 6 + sub-field 2 (10 5a) + sub-field 3 (18 a0f736)
+        assert body == bytes.fromhex("920106105a18a0f736")
+
+    def test_brightness_100_dimming_15min(self) -> None:
+        body = build_brightness_body(100, 900_000)
+        assert body == bytes.fromhex("9201061064 18a0f736".replace(" ", ""))
+
+    def test_brightness_60_dimming_15min(self) -> None:
+        body = build_brightness_body(60, 900_000)
+        assert body == bytes.fromhex("920106103c 18a0f736".replace(" ", ""))
+
+    def test_brightness_70_dimming_15min(self) -> None:
+        body = build_brightness_body(70, 900_000)
+        assert body == bytes.fromhex("920106104618a0f736")
+
+    def test_brightness_80_dimming_15min(self) -> None:
+        body = build_brightness_body(80, 900_000)
+        assert body == bytes.fromhex("920106105018a0f736")
+
+    def test_dimming_30min(self) -> None:
+        body = build_brightness_body(100, 1_800_000)
+        # 1800000 ms as varint
+        expected_inner = b"\x10\x64" + b"\x18" + encode_varint(1_800_000)
+        tag = bytes.fromhex("9201")
+        expected = tag + encode_varint(len(expected_inner)) + expected_inner
+        assert body == expected
+
+    def test_body_parseable_by_protobuf_parser(self) -> None:
+        """The brightness body should be parseable as protobuf fields."""
+        body = build_brightness_body(90, 900_000)
+        fields = parse_protobuf_fields(body)
+        # field 18 is length-delimited
+        assert 18 in fields
+        inner = fields[18][0]
+        assert isinstance(inner, bytes)
+        # Parse the inner protobuf
+        inner_fields = parse_protobuf_fields(inner)
+        assert inner_fields[2] == [90]     # brightness percentage
+        assert inner_fields[3] == [900000]  # dimming time ms
+
+    def test_all_brightness_levels(self) -> None:
+        """All five brightness levels produce valid protobuf."""
+        for pct in (60, 70, 80, 90, 100):
+            body = build_brightness_body(pct, 900_000)
+            fields = parse_protobuf_fields(body)
+            inner_fields = parse_protobuf_fields(fields[18][0])
+            assert inner_fields[2] == [pct]

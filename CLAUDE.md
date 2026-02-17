@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 pycasperglow is an async Python library for controlling Casper Glow lights via BLE. It is built on bleak and bleak-retry-connector, and is designed to be used as a backend for a Home Assistant integration.
 
+
+## Commit messages
+
+The commit message format is outlined in CONTRIBUTING.md
+
 ## Commands
 
 ```bash
@@ -46,4 +51,5 @@ This is a src-layout package (`src/pycasperglow/`). The library has a clean sepa
 - **Fresh connection per command** — each `turn_on()`/`turn_off()` call establishes a new connection, per Home Assistant BLE best practices.
 - **External client ownership** — when a `BleakClient` is passed to `CasperGlow`, the library never disconnects it. Only self-created connections are cleaned up in the `finally` block.
 - **pytest-asyncio auto mode** — async tests don't need `@pytest.mark.asyncio` decorators.
-- **Brightness and dimming are deferred** — command bytes have not been captured yet.
+- **Brightness command includes dimming time** — the BLE protocol sends brightness and dimming time together in a single field-18 protobuf message. `set_brightness()` and `set_dimming_time()` each default the other value when unknown.
+- **Battery level from state query** — sub-field 8 of the state response is believed to be battery percentage (always 100 in captures). Brightness is not reported in the state query response.
