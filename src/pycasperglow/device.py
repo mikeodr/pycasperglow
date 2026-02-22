@@ -230,7 +230,8 @@ class CasperGlow:
         body = build_brightness_body(brightness, minutes * 60_000)
         await self._execute_command(body)
         self._state.configured_dimming_time_minutes = minutes
-        self._state.dimming_time_minutes = minutes  # optimistic: remaining = full at t=0
+        # optimistic: remaining = full at t=0
+        self._state.dimming_time_minutes = minutes
         self._fire_callbacks()
 
     async def set_brightness(self, level: int) -> None:

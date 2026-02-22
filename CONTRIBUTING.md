@@ -5,15 +5,22 @@ Thanks for your interest in contributing! This document covers the workflow and 
 ## Getting Started
 
 1. Fork and clone the repository
-2. Create a virtual environment and install dev dependencies:
+2. Set up the virtual environment and install dev dependencies:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+make setup
 ```
 
-3. Create a branch for your changes:
+3. Install the git hooks:
+
+```bash
+make install-hooks
+```
+
+   This copies `hooks/pre-commit` into `.git/hooks/` so that ruff, mypy, and
+   the test suite run automatically before every commit.
+
+4. Create a branch for your changes:
 
 ```bash
 git checkout -b your-branch-name
@@ -21,19 +28,37 @@ git checkout -b your-branch-name
 
 ## Running Checks
 
-Before submitting a PR, make sure all checks pass:
+Before submitting a PR, make sure all checks pass (lint + typecheck + tests with
+coverage):
 
 ```bash
-pytest tests/ -v --cov=pycasperglow
-mypy src/ --strict
-ruff check src/ tests/
+make test
 ```
 
-To auto-fix lint issues:
+Run the same fast check the pre-commit hook uses (no coverage):
 
 ```bash
-ruff check --fix src/ tests/
+make check
 ```
+
+Auto-fix lint issues in-place:
+
+```bash
+make format
+```
+
+Targets at a glance:
+
+| Target | What it does |
+|--------|--------------|
+| `make setup` | Create `.venv` and install `.[dev]` |
+| `make install-hooks` | Install git hooks from `hooks/` |
+| `make format` | Auto-fix lint issues (`ruff --fix`) |
+| `make lint` | Check lint (read-only) |
+| `make typecheck` | Run `mypy --strict` |
+| `make check` | lint + typecheck + tests (no coverage) |
+| `make test` | lint + typecheck + tests with coverage |
+| `make clean` | Remove `.venv` and caches |
 
 ## Commit Message Style
 
