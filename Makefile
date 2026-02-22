@@ -21,7 +21,7 @@ install-hooks:
 
 # Auto-fix lint issues in-place
 format: $(VENV)
-	$(RUFF) check --fix src/ tests/
+	$(RUFF) format src/ tests/
 
 # Check for lint issues (read-only)
 lint: $(VENV)
