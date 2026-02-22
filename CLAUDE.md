@@ -6,6 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 pycasperglow is an async Python library for controlling Casper Glow lights via BLE. It is built on bleak and bleak-retry-connector, and is designed to be used as a backend for a Home Assistant integration.
 
+## Running tests
+
+Always execute tests within a venv.
 
 ## Commit messages
 
