@@ -62,14 +62,20 @@ def _make_mock_client(ready_token: int = 42) -> AsyncMock:
 
 
 def _make_state_notification(
-    *, is_on: bool = False, is_paused: bool = False, token: int = 42,
-    dimming_ms: int = 0, battery: int = 100,
+    *,
+    is_on: bool = False,
+    is_paused: bool = False,
+    token: int = 42,
+    dimming_ms: int = 0,
+    remaining_ms: int = 0,
+    battery: int = 100,
 ) -> bytes:
     """Build a notification with field 1 (token) and field 4 containing field 19.
 
     The field 19 body mirrors the real device structure:
     * sub-field 1: power/mode indicator (1 = on, 3 = off)
-    * sub-field 3: remaining dimming time in milliseconds
+    * sub-field 2: remaining dimming time in milliseconds (counts down to 0 when off)
+    * sub-field 3: configured total dimming duration in milliseconds
     * sub-field 4: paused indicator (0 = not paused, 1 = paused)
     * sub-field 8: battery percentage (always 100 in captures)
     """
@@ -78,26 +84,36 @@ def _make_state_notification(
     power_indicator = 1 if is_on else 3
     paused_indicator = 1 if is_paused else 0
     state_inner = (
-        b"\x08" + encode_varint(power_indicator)   # sub-field 1
-        + b"\x18" + encode_varint(dimming_ms)       # sub-field 3
-        + b"\x20" + encode_varint(paused_indicator)  # sub-field 4
-        + b"\x40" + encode_varint(battery)          # sub-field 8
+        b"\x08"
+        + encode_varint(power_indicator)  # sub-field 1
+        + b"\x10"
+        + encode_varint(remaining_ms)  # sub-field 2: remaining
+        + b"\x18"
+        + encode_varint(dimming_ms)  # sub-field 3: configured total
+        + b"\x20"
+        + encode_varint(paused_indicator)  # sub-field 4
+        + b"\x40"
+        + encode_varint(battery)  # sub-field 8
     )
     # field 19, wire type 2
     tag_19 = (STATE_RESPONSE_FIELD << 3) | 2
-    field4_body = (
-        encode_varint(tag_19) + encode_varint(len(state_inner)) + state_inner
-    )
+    field4_body = encode_varint(tag_19) + encode_varint(len(state_inner)) + state_inner
     # Wrap in top-level notification: field 1 (token), field 4 (body)
     return (
-        b"\x08" + encode_varint(token)
-        + b"\x22" + encode_varint(len(field4_body)) + field4_body
+        b"\x08"
+        + encode_varint(token)
+        + b"\x22"
+        + encode_varint(len(field4_body))
+        + field4_body
     )
 
 
 def _make_mock_client_with_state(
-    ready_token: int = 42, *, is_on: bool = True,
-    is_paused: bool = False, dimming_ms: int = 900_000,
+    ready_token: int = 42,
+    *,
+    is_on: bool = True,
+    is_paused: bool = False,
+    dimming_ms: int = 900_000,
 ) -> AsyncMock:
     """Create a mock BleakClient that simulates handshake + state response."""
     client = AsyncMock()
@@ -112,10 +128,15 @@ def _make_mock_client_with_state(
             client._notify_callback(None, notification)
         else:
             # For any other write (e.g. state query), send a state notification
-            state_notif = bytearray(_make_state_notification(
-                is_on=is_on, is_paused=is_paused,
-                token=ready_token, dimming_ms=dimming_ms,
-            ))
+            state_notif = bytearray(
+                _make_state_notification(
+                    is_on=is_on,
+                    is_paused=is_paused,
+                    token=ready_token,
+                    dimming_ms=dimming_ms,
+                    remaining_ms=dimming_ms,
+                )
+            )
             client._notify_callback(None, state_notif)
 
     client.start_notify = AsyncMock(side_effect=_start_notify)
@@ -393,6 +414,7 @@ class TestCasperGlow:
         glow = CasperGlow(device, client=client)
 
         state = await glow.query_state()
+        assert state.configured_dimming_time_minutes == 15
         assert state.dimming_time_minutes == 15
 
     async def test_query_state_fires_callback(self) -> None:
@@ -429,12 +451,17 @@ class TestCasperGlow:
         device = _make_ble_device()
         glow = CasperGlow(device)
 
-        notification = _make_state_notification(is_on=True, dimming_ms=900_000)
+        notification = _make_state_notification(
+            is_on=True,
+            dimming_ms=900_000,
+            remaining_ms=900_000,
+        )
         result = glow._parse_state_notification(notification)
 
         assert result is True
         assert glow.state.is_on is True
         assert glow.state.is_paused is False
+        assert glow.state.configured_dimming_time_minutes == 15
         assert glow.state.dimming_time_minutes == 15
         assert glow.state.raw_state is not None
 
@@ -455,7 +482,10 @@ class TestCasperGlow:
         glow = CasperGlow(device)
 
         notification = _make_state_notification(
-            is_on=True, is_paused=True, dimming_ms=900_000,
+            is_on=True,
+            is_paused=True,
+            dimming_ms=900_000,
+            remaining_ms=900_000,
         )
         result = glow._parse_state_notification(notification)
 
@@ -506,4 +536,40 @@ class TestCasperGlow:
         notification = _make_state_notification(is_on=False, dimming_ms=900_000)
         glow._parse_state_notification(notification)
 
+        assert glow.state.dimming_time_minutes == 0
+
+    async def test_parse_state_reports_remaining_not_total(self) -> None:
+        device = _make_ble_device()
+        glow = CasperGlow(device)
+        # 10 min remaining in a 15-min sequence
+        notification = _make_state_notification(
+            is_on=True,
+            dimming_ms=900_000,
+            remaining_ms=600_000,
+        )
+        glow._parse_state_notification(notification)
+
+        assert glow.state.configured_dimming_time_minutes == 15
+        assert glow.state.dimming_time_minutes == 10  # 600_000 ms // 60_000
+
+    async def test_parse_state_configured_set_from_ble(self) -> None:
+        device = _make_ble_device()
+        glow = CasperGlow(device)
+        notification = _make_state_notification(is_on=True, dimming_ms=1_800_000)
+        glow._parse_state_notification(notification)
+
+        assert glow.state.configured_dimming_time_minutes == 30
+
+    async def test_parse_state_off_does_not_corrupt_configured_time(self) -> None:
+        device = _make_ble_device()
+        glow = CasperGlow(device)
+        # Establish a known configured time from a previous on-state poll.
+        glow._parse_state_notification(
+            _make_state_notification(is_on=True, dimming_ms=900_000)
+        )
+        assert glow.state.configured_dimming_time_minutes == 15
+
+        # Device turns off: sf3 = 0 — configured setting must not be overwritten.
+        glow._parse_state_notification(_make_state_notification(is_on=False))
+        assert glow.state.configured_dimming_time_minutes == 15
         assert glow.state.dimming_time_minutes == 0

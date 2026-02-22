@@ -199,9 +199,7 @@ class TestParseProtobufFields:
 class TestParseStateResponse:
     """State response parsing tests."""
 
-    def _make_state_notification(
-        self, state_body: bytes, token: int = 42
-    ) -> bytes:
+    def _make_state_notification(self, state_body: bytes, token: int = 42) -> bytes:
         """Build a notification with field 1 (token) and field 4 wrapping field 19."""
         from pycasperglow.protocol import STATE_RESPONSE_FIELD
 
@@ -210,8 +208,11 @@ class TestParseStateResponse:
             encode_varint(tag_19) + encode_varint(len(state_body)) + state_body
         )
         return (
-            b"\x08" + encode_varint(token)
-            + b"\x22" + encode_varint(len(field4_body)) + field4_body
+            b"\x08"
+            + encode_varint(token)
+            + b"\x22"
+            + encode_varint(len(field4_body))
+            + field4_body
         )
 
     def test_extracts_field_19(self) -> None:
@@ -261,8 +262,7 @@ class TestParseStateResponse:
         # field 4 body has no field 19 → returns None
         field4_body = b"\x08\x03"  # just sub-field 1
         notification = (
-            b"\x08\x2a"
-            + b"\x22" + encode_varint(len(field4_body)) + field4_body
+            b"\x08\x2a" + b"\x22" + encode_varint(len(field4_body)) + field4_body
         )
         assert parse_state_response(notification) is None
 
@@ -275,8 +275,8 @@ class TestParseStateResponse:
         )
         result = parse_state_response(raw)
         assert result is not None
-        assert result[1] == [3]   # power/mode: off
-        assert result[3] == [0]   # remaining dim time: 0 ms
+        assert result[1] == [3]  # power/mode: off
+        assert result[3] == [0]  # remaining dim time: 0 ms
         assert result[8] == [100]  # battery: 100%
 
     def test_real_device_on_notification(self) -> None:
@@ -289,10 +289,10 @@ class TestParseStateResponse:
         )
         result = parse_state_response(raw)
         assert result is not None
-        assert result[1] == [1]       # power/mode: on
+        assert result[1] == [1]  # power/mode: on
         assert result[3] == [900000]  # remaining dim time: 900 000 ms = 15 min
-        assert result[4] == [0]       # paused: no
-        assert result[8] == [100]     # battery: 100%
+        assert result[4] == [0]  # paused: no
+        assert result[8] == [100]  # battery: 100%
 
     def test_real_device_paused_notification(self) -> None:
         """Parse the actual PAUSED-state notification from a real Glow device."""
@@ -304,10 +304,10 @@ class TestParseStateResponse:
         )
         result = parse_state_response(raw)
         assert result is not None
-        assert result[1] == [1]       # power/mode: on
+        assert result[1] == [1]  # power/mode: on
         assert result[3] == [900000]  # remaining dim time: 900 000 ms = 15 min
-        assert result[4] == [1]       # paused: yes
-        assert result[8] == [100]     # battery: 100%
+        assert result[4] == [1]  # paused: yes
+        assert result[8] == [100]  # battery: 100%
 
 
 class TestBuildBrightnessBody:
@@ -356,7 +356,7 @@ class TestBuildBrightnessBody:
         assert isinstance(inner, bytes)
         # Parse the inner protobuf
         inner_fields = parse_protobuf_fields(inner)
-        assert inner_fields[2] == [90]     # brightness percentage
+        assert inner_fields[2] == [90]  # brightness percentage
         assert inner_fields[3] == [900000]  # dimming time ms
 
     def test_all_brightness_levels(self) -> None:

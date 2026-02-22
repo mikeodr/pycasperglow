@@ -162,8 +162,11 @@ def build_action_packet(token: int, action_body: bytes) -> bytes:
     """
     return (
         b"\x08\x01"
-        + b"\x10" + encode_varint(token)
-        + b"\x22" + encode_varint(len(action_body)) + action_body
+        + b"\x10"
+        + encode_varint(token)
+        + b"\x22"
+        + encode_varint(len(action_body))
+        + action_body
     )
 
 
@@ -184,7 +187,9 @@ def build_brightness_body(
     Verified against iOS app BLE captures.
     """
     inner = (
-        b"\x10" + encode_varint(brightness_pct)
-        + b"\x18" + encode_varint(dimming_time_ms)
+        b"\x10"
+        + encode_varint(brightness_pct)
+        + b"\x18"
+        + encode_varint(dimming_time_ms)
     )
     return _FIELD_18_TAG + encode_varint(len(inner)) + inner

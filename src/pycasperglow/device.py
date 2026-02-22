@@ -39,7 +39,7 @@ class GlowState:
     is_on: bool | None = None
     brightness_level: int | None = None
     battery_level: int | None = None
-    dimming_time_minutes: int | None = None            # remaining time from device
+    dimming_time_minutes: int | None = None  # remaining time from device
     configured_dimming_time_minutes: int | None = None  # set only by set_dimming_time()
     is_paused: bool | None = None
     raw_state: bytes | None = None
@@ -109,7 +109,10 @@ class CasperGlow:
         field 4 of the notification).  The field-19 inner sub-fields:
 
         * sub-field 1: power/mode indicator (1 = on, 3 = off)
-        * sub-field 3: remaining dimming time in milliseconds (0 when off)
+        * sub-field 2: remaining dimming time in milliseconds
+            (counts down to 0 when off)
+        * sub-field 3: configured total dimming duration in milliseconds
+            (0 when off)
         * sub-field 4: paused indicator (0 = not paused, 1 = paused)
         * sub-field 8: battery percentage (always 100 in captures)
         """
@@ -126,10 +129,18 @@ class CasperGlow:
             if not self._state.is_on:
                 self._state.is_paused = False
 
-        # Sub-field 3: remaining dimming time in milliseconds
+        # Sub-field 2: remaining dimming time in milliseconds (counts down to 0)
+        sf2 = state_fields.get(2)
+        if sf2 is not None and isinstance(sf2[0], int):
+            self._state.dimming_time_minutes = sf2[0] // 60_000
+
+        # Sub-field 3: configured total duration in milliseconds.
+        # Only update when non-zero — device reports 0 when off.
         sf3 = state_fields.get(3)
         if sf3 is not None and isinstance(sf3[0], int):
-            self._state.dimming_time_minutes = sf3[0] // 60_000
+            total_ms = sf3[0]
+            if total_ms > 0:
+                self._state.configured_dimming_time_minutes = total_ms // 60_000
 
         # Force remaining time to 0 when device is off regardless of what the
         # device reported in sub-field 3.
@@ -223,8 +234,7 @@ class CasperGlow:
 
         if minutes not in DIMMING_TIME_MINUTES:
             raise ValueError(
-                f"Invalid dimming time {minutes}; "
-                f"must be one of {DIMMING_TIME_MINUTES}"
+                f"Invalid dimming time {minutes}; must be one of {DIMMING_TIME_MINUTES}"
             )
         brightness = self._state.brightness_level or BRIGHTNESS_LEVELS[-1]
         body = build_brightness_body(brightness, minutes * 60_000)
@@ -245,8 +255,7 @@ class CasperGlow:
 
         if level not in BRIGHTNESS_LEVELS:
             raise ValueError(
-                f"Invalid brightness {level}; "
-                f"must be one of {BRIGHTNESS_LEVELS}"
+                f"Invalid brightness {level}; must be one of {BRIGHTNESS_LEVELS}"
             )
         dim_min = (
             self._state.configured_dimming_time_minutes
@@ -349,9 +358,7 @@ class CasperGlow:
                 _LOGGER.debug("Sent state query: %s", packet.hex())
 
                 try:
-                    await asyncio.wait_for(
-                        state_event.wait(), STATE_RESPONSE_TIMEOUT
-                    )
+                    await asyncio.wait_for(state_event.wait(), STATE_RESPONSE_TIMEOUT)
                 except TimeoutError:
                     _LOGGER.warning("State response timeout — returning cached state")
 
