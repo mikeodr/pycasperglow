@@ -39,7 +39,8 @@ class GlowState:
     is_on: bool | None = None
     brightness_level: int | None = None
     battery_level: int | None = None
-    dimming_time_minutes: int | None = None
+    dimming_time_minutes: int | None = None            # remaining time from device
+    configured_dimming_time_minutes: int | None = None  # set only by set_dimming_time()
     is_paused: bool | None = None
     raw_state: bytes | None = None
 
@@ -130,6 +131,11 @@ class CasperGlow:
         if sf3 is not None and isinstance(sf3[0], int):
             self._state.dimming_time_minutes = sf3[0] // 60_000
 
+        # Force remaining time to 0 when device is off regardless of what the
+        # device reported in sub-field 3.
+        if self._state.is_on is False:
+            self._state.dimming_time_minutes = 0
+
         # Sub-field 4: paused indicator (0 = not paused, 1 = paused)
         sf4 = state_fields.get(4)
         if sf4 is not None and isinstance(sf4[0], int):
@@ -187,6 +193,7 @@ class CasperGlow:
 
         await self._execute_command(ACTION_BODY_OFF)
         self._state.is_on = False
+        self._state.dimming_time_minutes = 0
         self._fire_callbacks()
 
     async def pause(self) -> None:
@@ -222,7 +229,8 @@ class CasperGlow:
         brightness = self._state.brightness_level or BRIGHTNESS_LEVELS[-1]
         body = build_brightness_body(brightness, minutes * 60_000)
         await self._execute_command(body)
-        self._state.dimming_time_minutes = minutes
+        self._state.configured_dimming_time_minutes = minutes
+        self._state.dimming_time_minutes = minutes  # optimistic: remaining = full at t=0
         self._fire_callbacks()
 
     async def set_brightness(self, level: int) -> None:
@@ -239,7 +247,11 @@ class CasperGlow:
                 f"Invalid brightness {level}; "
                 f"must be one of {BRIGHTNESS_LEVELS}"
             )
-        dim_min = self._state.dimming_time_minutes or DIMMING_TIME_MINUTES[0]
+        dim_min = (
+            self._state.configured_dimming_time_minutes
+            or self._state.dimming_time_minutes
+            or DIMMING_TIME_MINUTES[0]
+        )
         body = build_brightness_body(level, dim_min * 60_000)
         await self._execute_command(body)
         self._state.brightness_level = level

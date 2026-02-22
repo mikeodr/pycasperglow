@@ -281,6 +281,7 @@ class TestCasperGlow:
         expected_packet = build_action_packet(42, expected_body)
         assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
         assert glow.state.dimming_time_minutes == 30
+        assert glow.state.configured_dimming_time_minutes == 30
 
     async def test_set_dimming_time_invalid_raises(self) -> None:
         device = _make_ble_device()
@@ -301,6 +302,7 @@ class TestCasperGlow:
 
         assert len(states) == 1
         assert states[0].dimming_time_minutes == 45
+        assert states[0].configured_dimming_time_minutes == 45
 
     async def test_set_dimming_time_uses_known_brightness(self) -> None:
         device = _make_ble_device()
@@ -472,3 +474,36 @@ class TestCasperGlow:
 
         assert result is False
         assert glow.state.raw_state is None
+
+    async def test_set_brightness_uses_configured_time(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client(ready_token=42)
+        glow = CasperGlow(device, client=client)
+        glow._state.configured_dimming_time_minutes = 60
+        glow._state.dimming_time_minutes = 44  # stale remaining — must not be used
+
+        await glow.set_brightness(90)
+
+        calls = client.write_gatt_char.call_args_list
+        expected_body = build_brightness_body(90, 60 * 60_000)
+        expected_packet = build_action_packet(42, expected_body)
+        assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
+
+    async def test_turn_off_zeros_dimming_time(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client()
+        glow = CasperGlow(device, client=client)
+        glow._state.dimming_time_minutes = 30
+
+        await glow.turn_off()
+
+        assert glow.state.dimming_time_minutes == 0
+
+    async def test_parse_state_notification_off_zeros_dimming_time(self) -> None:
+        device = _make_ble_device()
+        glow = CasperGlow(device)
+        # Device is off but reports a non-zero remaining time — must be zeroed.
+        notification = _make_state_notification(is_on=False, dimming_ms=900_000)
+        glow._parse_state_notification(notification)
+
+        assert glow.state.dimming_time_minutes == 0
