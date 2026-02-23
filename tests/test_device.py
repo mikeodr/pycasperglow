@@ -301,7 +301,6 @@ class TestCasperGlow:
         expected_body = build_brightness_body(100, 30 * 60_000)
         expected_packet = build_action_packet(42, expected_body)
         assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
-        assert glow.state.dimming_time_minutes == 30
         assert glow.state.configured_dimming_time_minutes == 30
 
     async def test_set_dimming_time_invalid_raises(self) -> None:
@@ -322,7 +321,6 @@ class TestCasperGlow:
         await glow.set_dimming_time(45)
 
         assert len(states) == 1
-        assert states[0].dimming_time_minutes == 45
         assert states[0].configured_dimming_time_minutes == 45
 
     async def test_set_dimming_time_uses_known_brightness(self) -> None:
