@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-02-23
+
+### Changed
+
+- `set_brightness()` renamed to `set_brightness_and_dimming_time(level, dimming_time_minutes)`. Both arguments are now required positional parameters. The BLE protocol always encodes brightness and dimming time together in a single packet; the split API was a leaky abstraction that required hidden state bookkeeping.
+- `turn_on()` no longer accepts a `brightness_level` shortcut parameter. Call `set_brightness_and_dimming_time()` separately after turning on.
+
+### Removed
+
+- `set_dimming_time()` — functionality merged into `set_brightness_and_dimming_time()`.
+
 ## [0.3.7] - 2026-02-23
 
 ### Added
@@ -130,6 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for external `BleakClient` (Home Assistant integration).
 - Typed package with `py.typed` marker.
 
+[1.0.0]: https://github.com/mikeodr/pycasperglow/compare/v0.3.7...v1.0.0
 [0.3.7]: https://github.com/mikeodr/pycasperglow/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/mikeodr/pycasperglow/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/mikeodr/pycasperglow/compare/v0.3.4...v0.3.5
