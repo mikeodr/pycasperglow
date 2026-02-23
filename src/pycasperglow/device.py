@@ -227,17 +227,19 @@ class CasperGlow:
         """Set the dimming time in minutes.
 
         Valid values: 15, 30, 45, 60, 90.  The dimming time is sent
-        alongside the current brightness.  If brightness is unknown,
-        100 (maximum) is used as the default.
+        alongside the current brightness level.  Brightness must have
+        been set via ``set_brightness()`` before calling this method;
+        raises ``ValueError`` if brightness is not yet known.
         """
-        from .const import BRIGHTNESS_LEVELS, DIMMING_TIME_MINUTES
+        from .const import DIMMING_TIME_MINUTES
 
         if minutes not in DIMMING_TIME_MINUTES:
             raise ValueError(
                 f"Invalid dimming time {minutes}; must be one of {DIMMING_TIME_MINUTES}"
             )
-        brightness = self._state.brightness_level or BRIGHTNESS_LEVELS[-1]
-        body = build_brightness_body(brightness, minutes * 60_000)
+        if self._state.brightness_level is None:
+            raise ValueError("Brightness level is unknown; call set_brightness() first")
+        body = build_brightness_body(self._state.brightness_level, minutes * 60_000)
         await self._execute_command(body)
         self._state.configured_dimming_time_minutes = minutes
         self._fire_callbacks()
@@ -255,11 +257,7 @@ class CasperGlow:
             raise ValueError(
                 f"Invalid brightness {level}; must be one of {BRIGHTNESS_LEVELS}"
             )
-        dim_min = (
-            self._state.configured_dimming_time_minutes
-            or self._state.dimming_time_minutes
-            or DIMMING_TIME_MINUTES[0]
-        )
+        dim_min = self._state.configured_dimming_time_minutes or DIMMING_TIME_MINUTES[0]
         body = build_brightness_body(level, dim_min * 60_000)
         await self._execute_command(body)
         self._state.brightness_level = level

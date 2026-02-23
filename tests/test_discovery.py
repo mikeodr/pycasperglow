@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from pycasperglow.const import SERVICE_UUID
 from pycasperglow.discovery import is_casper_glow
 
@@ -28,37 +30,40 @@ def _make_adv(
 class TestIsCasperGlow:
     """is_casper_glow detection tests."""
 
-    def test_match_by_service_uuid(self) -> None:
-        device = _make_device()
-        adv = _make_adv(service_uuids=[SERVICE_UUID])
+    @pytest.mark.parametrize(
+        ("device_name", "local_name", "service_uuids"),
+        [
+            (None, None, [SERVICE_UUID]),
+            (None, None, [SERVICE_UUID.upper()]),
+            (None, "JarGlow123", []),
+            ("Jar", None, []),
+        ],
+        ids=["service_uuid", "service_uuid_upper", "local_name", "device_name"],
+    )
+    def test_matches(
+        self,
+        device_name: str | None,
+        local_name: str | None,
+        service_uuids: list[str],
+    ) -> None:
+        device = _make_device(name=device_name)
+        adv = _make_adv(local_name=local_name, service_uuids=service_uuids)
         assert is_casper_glow(device, adv)
 
-    def test_match_by_service_uuid_case_insensitive(self) -> None:
-        device = _make_device()
-        adv = _make_adv(service_uuids=[SERVICE_UUID.upper()])
-        assert is_casper_glow(device, adv)
-
-    def test_match_by_local_name(self) -> None:
-        device = _make_device()
-        adv = _make_adv(local_name="JarGlow123")
-        assert is_casper_glow(device, adv)
-
-    def test_match_by_device_name(self) -> None:
-        device = _make_device(name="Jar")
-        adv = _make_adv()
-        assert is_casper_glow(device, adv)
-
-    def test_no_match(self) -> None:
-        device = _make_device(name="SomeOtherDevice")
-        adv = _make_adv(local_name="SomeOtherDevice")
-        assert not is_casper_glow(device, adv)
-
-    def test_no_match_none_names(self) -> None:
-        device = _make_device(name=None)
-        adv = _make_adv(local_name=None)
-        assert not is_casper_glow(device, adv)
-
-    def test_no_match_partial_prefix(self) -> None:
-        device = _make_device(name="Ja")
-        adv = _make_adv(local_name="Ja")
+    @pytest.mark.parametrize(
+        ("device_name", "local_name"),
+        [
+            ("SomeOtherDevice", "SomeOtherDevice"),
+            (None, None),
+            ("Ja", "Ja"),
+        ],
+        ids=["different_device", "none_names", "partial_prefix"],
+    )
+    def test_no_match(
+        self,
+        device_name: str | None,
+        local_name: str | None,
+    ) -> None:
+        device = _make_device(name=device_name)
+        adv = _make_adv(local_name=local_name)
         assert not is_casper_glow(device, adv)

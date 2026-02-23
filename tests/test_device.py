@@ -12,6 +12,7 @@ from pycasperglow.const import (
     ACTION_BODY_ON,
     ACTION_BODY_PAUSE,
     ACTION_BODY_RESUME,
+    DIMMING_TIME_MINUTES,
     QUERY_STATE_BODY,
     READ_CHAR_UUID,
     RECONNECT_PACKET,
@@ -144,43 +145,61 @@ def _make_mock_client_with_state(
     return client
 
 
+@pytest.fixture
+def device() -> Any:
+    return _make_ble_device()
+
+
+@pytest.fixture
+def mock_client() -> AsyncMock:
+    return _make_mock_client()
+
+
+@pytest.fixture
+def glow(device: Any, mock_client: AsyncMock) -> CasperGlow:
+    return CasperGlow(device, client=mock_client)
+
+
 class TestCasperGlow:
     """CasperGlow client tests."""
 
-    async def test_turn_on_writes_correct_packets(self) -> None:
+    @pytest.mark.parametrize(
+        ("method_name", "action_body", "state_attr", "state_val"),
+        [
+            ("turn_on", ACTION_BODY_ON, None, None),
+            ("turn_off", ACTION_BODY_OFF, None, None),
+            ("pause", ACTION_BODY_PAUSE, "is_paused", True),
+            ("resume", ACTION_BODY_RESUME, "is_paused", False),
+        ],
+        ids=["turn_on", "turn_off", "pause", "resume"],
+    )
+    async def test_command_writes_correct_packet(
+        self,
+        method_name: str,
+        action_body: bytes,
+        state_attr: str | None,
+        state_val: bool | None,
+    ) -> None:
         device = _make_ble_device()
         client = _make_mock_client(ready_token=42)
         glow = CasperGlow(device, client=client)
 
-        await glow.turn_on()
+        await getattr(glow, method_name)()
 
         calls = client.write_gatt_char.call_args_list
         assert len(calls) == 2
         assert calls[0].args == (WRITE_CHAR_UUID, RECONNECT_PACKET)
-        expected_on = build_action_packet(42, ACTION_BODY_ON)
-        assert calls[1].args == (WRITE_CHAR_UUID, expected_on)
+        assert calls[1].args == (WRITE_CHAR_UUID, build_action_packet(42, action_body))
+        if state_attr is not None:
+            assert getattr(glow.state, state_attr) is state_val
 
-    async def test_turn_off_writes_correct_packets(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client(ready_token=42)
-        glow = CasperGlow(device, client=client)
-
-        await glow.turn_off()
-
-        calls = client.write_gatt_char.call_args_list
-        assert len(calls) == 2
-        expected_off = build_action_packet(42, ACTION_BODY_OFF)
-        assert calls[1].args == (WRITE_CHAR_UUID, expected_off)
-
-    async def test_subscribes_to_notifications(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client()
-        glow = CasperGlow(device, client=client)
-
+    async def test_subscribes_to_notifications(
+        self, glow: CasperGlow, mock_client: AsyncMock
+    ) -> None:
         await glow.turn_on()
 
-        client.start_notify.assert_called_once()
-        assert client.start_notify.call_args.args[0] == READ_CHAR_UUID
+        mock_client.start_notify.assert_called_once()
+        assert mock_client.start_notify.call_args.args[0] == READ_CHAR_UUID
 
     async def test_handshake_timeout(self) -> None:
         device = _make_ble_device()
@@ -225,14 +244,12 @@ class TestCasperGlow:
 
         client.disconnect.assert_called_once()
 
-    async def test_external_client_not_disconnected(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client()
-        glow = CasperGlow(device, client=client)
-
+    async def test_external_client_not_disconnected(
+        self, glow: CasperGlow, mock_client: AsyncMock
+    ) -> None:
         await glow.turn_on()
 
-        client.disconnect.assert_not_called()
+        mock_client.disconnect.assert_not_called()
 
     async def test_properties(self) -> None:
         device = _make_ble_device(name="JarTest", address="11:22:33:44:55:66")
@@ -240,81 +257,65 @@ class TestCasperGlow:
         assert glow.name == "JarTest"
         assert glow.address == "11:22:33:44:55:66"
 
-    async def test_pause_sends_correct_packet(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client(ready_token=42)
-        glow = CasperGlow(device, client=client)
-
-        await glow.pause()
-
-        calls = client.write_gatt_char.call_args_list
-        expected = build_action_packet(42, ACTION_BODY_PAUSE)
-        assert calls[1].args == (WRITE_CHAR_UUID, expected)
-        assert glow.state.is_paused is True
-
-    async def test_resume_sends_correct_packet(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client(ready_token=42)
-        glow = CasperGlow(device, client=client)
-
-        await glow.resume()
-
-        calls = client.write_gatt_char.call_args_list
-        expected = build_action_packet(42, ACTION_BODY_RESUME)
-        assert calls[1].args == (WRITE_CHAR_UUID, expected)
-        assert glow.state.is_paused is False
-
-    async def test_pause_fires_callback(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client()
-        glow = CasperGlow(device, client=client)
+    @pytest.mark.parametrize(
+        ("method_name", "state_attr", "state_val"),
+        [
+            ("pause", "is_paused", True),
+            ("resume", "is_paused", False),
+        ],
+    )
+    async def test_pause_resume_fires_callback(
+        self,
+        glow: CasperGlow,
+        method_name: str,
+        state_attr: str,
+        state_val: bool,
+    ) -> None:
         states: list[Any] = []
         glow.register_callback(lambda s: states.append(s))
 
-        await glow.pause()
+        await getattr(glow, method_name)()
 
         assert len(states) == 1
-        assert states[0].is_paused is True
-
-    async def test_resume_fires_callback(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client()
-        glow = CasperGlow(device, client=client)
-        states: list[Any] = []
-        glow.register_callback(lambda s: states.append(s))
-
-        await glow.resume()
-
-        assert len(states) == 1
-        assert states[0].is_paused is False
+        assert getattr(states[0], state_attr) is state_val
 
     async def test_set_dimming_time_sends_correct_packet(self) -> None:
         device = _make_ble_device()
         client = _make_mock_client(ready_token=42)
         glow = CasperGlow(device, client=client)
+        glow._state.brightness_level = 80  # brightness must be known
 
         await glow.set_dimming_time(30)
 
         calls = client.write_gatt_char.call_args_list
         assert len(calls) == 2
-        # Should send brightness body with default brightness (100) and 30 min
-        expected_body = build_brightness_body(100, 30 * 60_000)
+        # Should send brightness body with the known brightness (80) and 30 min
+        expected_body = build_brightness_body(80, 30 * 60_000)
         expected_packet = build_action_packet(42, expected_body)
         assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
         assert glow.state.configured_dimming_time_minutes == 30
 
-    async def test_set_dimming_time_invalid_raises(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client()
-        glow = CasperGlow(device, client=client)
+    @pytest.mark.parametrize(
+        ("method_name", "arg", "match"),
+        [
+            ("set_dimming_time", 20, "Invalid dimming time"),
+            ("set_brightness", 50, "Invalid brightness"),
+        ],
+    )
+    async def test_invalid_arg_raises(
+        self,
+        glow: CasperGlow,
+        method_name: str,
+        arg: int,
+        match: str,
+    ) -> None:
+        with pytest.raises(ValueError, match=match):
+            await getattr(glow, method_name)(arg)
 
-        with pytest.raises(ValueError, match="Invalid dimming time"):
-            await glow.set_dimming_time(20)
-
-    async def test_set_dimming_time_fires_callback(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client()
-        glow = CasperGlow(device, client=client)
+    async def test_set_dimming_time_fires_callback(
+        self, glow: CasperGlow
+    ) -> None:
+        glow._state.brightness_level = 70  # brightness must be known
         states: list[Any] = []
         glow.register_callback(lambda s: states.append(s))
 
@@ -322,6 +323,13 @@ class TestCasperGlow:
 
         assert len(states) == 1
         assert states[0].configured_dimming_time_minutes == 45
+
+    async def test_set_dimming_time_unknown_brightness_raises(
+        self, glow: CasperGlow
+    ) -> None:
+        # brightness_level is None by default — no set_brightness() call yet
+        with pytest.raises(ValueError, match="Brightness level is unknown"):
+            await glow.set_dimming_time(30)
 
     async def test_set_dimming_time_uses_known_brightness(self) -> None:
         device = _make_ble_device()
@@ -351,18 +359,9 @@ class TestCasperGlow:
         assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
         assert glow.state.brightness_level == 80
 
-    async def test_set_brightness_invalid_raises(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client()
-        glow = CasperGlow(device, client=client)
-
-        with pytest.raises(ValueError, match="Invalid brightness"):
-            await glow.set_brightness(50)
-
-    async def test_set_brightness_fires_callback(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client()
-        glow = CasperGlow(device, client=client)
+    async def test_set_brightness_fires_callback(
+        self, glow: CasperGlow
+    ) -> None:
         states: list[Any] = []
         glow.register_callback(lambda s: states.append(s))
 
@@ -371,16 +370,18 @@ class TestCasperGlow:
         assert len(states) == 1
         assert states[0].brightness_level == 70
 
-    async def test_set_brightness_uses_known_dimming_time(self) -> None:
+    async def test_set_brightness_ignores_remaining_dimming_time(self) -> None:
+        # dimming_time_minutes is a countdown from the device and not a valid
+        # configured value; set_brightness() must not use it as a fallback.
         device = _make_ble_device()
         client = _make_mock_client(ready_token=42)
         glow = CasperGlow(device, client=client)
-        glow._state.dimming_time_minutes = 60  # previously known
+        glow._state.dimming_time_minutes = 60  # remaining time — must be ignored
 
         await glow.set_brightness(90)
 
         calls = client.write_gatt_char.call_args_list
-        expected_body = build_brightness_body(90, 60 * 60_000)
+        expected_body = build_brightness_body(90, DIMMING_TIME_MINUTES[0] * 60_000)
         expected_packet = build_action_packet(42, expected_body)
         assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
 
@@ -517,10 +518,9 @@ class TestCasperGlow:
         expected_packet = build_action_packet(42, expected_body)
         assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
 
-    async def test_turn_off_zeros_dimming_time(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client()
-        glow = CasperGlow(device, client=client)
+    async def test_turn_off_zeros_dimming_time(
+        self, glow: CasperGlow
+    ) -> None:
         glow._state.dimming_time_minutes = 30
 
         await glow.turn_off()
