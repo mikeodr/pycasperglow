@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-02-23
+
+### Added
+
+- `BatteryLevel` enum with four members (`PCT_25`, `PCT_50`, `PCT_75`, `PCT_100`) mapping raw device values (3–6) to their corresponding percentage. Exported from the top-level package.
+
+### Fixed
+
+- Battery level was always reported as 100 due to reading the wrong protobuf field (sub-field 8, a device constant). Now correctly read from sub-field 7 inner field 2 — a 4-step discrete enum.
+- `set_dimming_time()` no longer silently defaults to 100 % brightness when brightness is unknown; it now raises `ValueError` with a descriptive message requiring `set_brightness()` to be called first.
+
+### Changed
+
+- `GlowState.battery_level` type changed from `int | None` to `BatteryLevel | None`.
+- `examples/discovery.py` battery display updated to use `BatteryLevel` string representation (`"25%"`, `"50%"`, etc.).
+
 ## [0.3.6] - 2026-02-23
 
 ### Changed
@@ -114,6 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for external `BleakClient` (Home Assistant integration).
 - Typed package with `py.typed` marker.
 
+[0.3.7]: https://github.com/mikeodr/pycasperglow/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/mikeodr/pycasperglow/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/mikeodr/pycasperglow/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/mikeodr/pycasperglow/compare/v0.3.3...v0.3.4
