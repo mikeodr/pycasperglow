@@ -83,7 +83,9 @@ class GlowState:
     brightness_level: int | None = None
     battery_level: BatteryLevel | None = None
     dimming_time_minutes: int | None = None  # remaining time from device
-    configured_dimming_time_minutes: int | None = None  # set only by set_dimming_time()
+    configured_dimming_time_minutes: int | None = (
+        None  # set by set_brightness_and_dimming_time()
+    )
     is_paused: bool | None = None
     raw_state: bytes | None = None
 
@@ -238,14 +240,12 @@ class CasperGlow:
         finally:
             await client.disconnect()
 
-    async def turn_on(self, brightness_level: int | None = None) -> None:
-        """Turn the light on, optionally setting brightness."""
+    async def turn_on(self) -> None:
+        """Turn the light on."""
         from .const import ACTION_BODY_ON
 
         await self._execute_command(ACTION_BODY_ON)
         self._state.is_on = True
-        if brightness_level is not None:
-            await self.set_brightness(brightness_level)
         self._fire_callbacks()
 
     async def turn_off(self) -> None:
@@ -273,33 +273,17 @@ class CasperGlow:
         self._state.is_paused = False
         self._fire_callbacks()
 
-    async def set_dimming_time(self, minutes: int) -> None:
-        """Set the dimming time in minutes.
+    async def set_brightness_and_dimming_time(
+        self, level: int, dimming_time_minutes: int
+    ) -> None:
+        """Set brightness percentage and dimming time together.
 
-        Valid values: 15, 30, 45, 60, 90.  The dimming time is sent
-        alongside the current brightness level.  Brightness must have
-        been set via ``set_brightness()`` before calling this method;
-        raises ``ValueError`` if brightness is not yet known.
-        """
-        from .const import DIMMING_TIME_MINUTES
+        Both values are required and transmitted in a single BLE command
+        (the device protocol encodes them together in a field-18 protobuf
+        message).
 
-        if minutes not in DIMMING_TIME_MINUTES:
-            raise ValueError(
-                f"Invalid dimming time {minutes}; must be one of {DIMMING_TIME_MINUTES}"
-            )
-        if self._state.brightness_level is None:
-            raise ValueError("Brightness level is unknown; call set_brightness() first")
-        body = build_brightness_body(self._state.brightness_level, minutes * 60_000)
-        await self._execute_command(body)
-        self._state.configured_dimming_time_minutes = minutes
-        self._fire_callbacks()
-
-    async def set_brightness(self, level: int) -> None:
-        """Set brightness percentage.
-
-        Valid values: 60, 70, 80, 90, 100 (matching iOS app levels 1-5).
-        The brightness command also includes the current dimming time.
-        If the dimming time is unknown, 15 minutes is used as the default.
+        Valid brightness values: 60, 70, 80, 90, 100 (iOS app levels 1–5).
+        Valid dimming time values: 15, 30, 45, 60, 90 (minutes).
         """
         from .const import BRIGHTNESS_LEVELS, DIMMING_TIME_MINUTES
 
@@ -307,10 +291,15 @@ class CasperGlow:
             raise ValueError(
                 f"Invalid brightness {level}; must be one of {BRIGHTNESS_LEVELS}"
             )
-        dim_min = self._state.configured_dimming_time_minutes or DIMMING_TIME_MINUTES[0]
-        body = build_brightness_body(level, dim_min * 60_000)
+        if dimming_time_minutes not in DIMMING_TIME_MINUTES:
+            raise ValueError(
+                f"Invalid dimming time {dimming_time_minutes};"
+                f" must be one of {DIMMING_TIME_MINUTES}"
+            )
+        body = build_brightness_body(level, dimming_time_minutes * 60_000)
         await self._execute_command(body)
         self._state.brightness_level = level
+        self._state.configured_dimming_time_minutes = dimming_time_minutes
         self._fire_callbacks()
 
     async def _execute_command(self, action_body: bytes) -> None:

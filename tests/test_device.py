@@ -12,7 +12,6 @@ from pycasperglow.const import (
     ACTION_BODY_ON,
     ACTION_BODY_PAUSE,
     ACTION_BODY_RESUME,
-    DIMMING_TIME_MINUTES,
     QUERY_STATE_BODY,
     READ_CHAR_UUID,
     RECONNECT_PACKET,
@@ -284,107 +283,44 @@ class TestCasperGlow:
         assert len(states) == 1
         assert getattr(states[0], state_attr) is state_val
 
-    async def test_set_dimming_time_sends_correct_packet(self) -> None:
+    async def test_set_brightness_and_dimming_time_sends_correct_packet(self) -> None:
         device = _make_ble_device()
         client = _make_mock_client(ready_token=42)
         glow = CasperGlow(device, client=client)
-        glow._state.brightness_level = 80  # brightness must be known
 
-        await glow.set_dimming_time(30)
+        await glow.set_brightness_and_dimming_time(80, 30)
 
         calls = client.write_gatt_char.call_args_list
         assert len(calls) == 2
-        # Should send brightness body with the known brightness (80) and 30 min
         expected_body = build_brightness_body(80, 30 * 60_000)
         expected_packet = build_action_packet(42, expected_body)
         assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
+        assert glow.state.brightness_level == 80
         assert glow.state.configured_dimming_time_minutes == 30
 
-    @pytest.mark.parametrize(
-        ("method_name", "arg", "match"),
-        [
-            ("set_dimming_time", 20, "Invalid dimming time"),
-            ("set_brightness", 50, "Invalid brightness"),
-        ],
-    )
-    async def test_invalid_arg_raises(
-        self,
-        glow: CasperGlow,
-        method_name: str,
-        arg: int,
-        match: str,
-    ) -> None:
-        with pytest.raises(ValueError, match=match):
-            await getattr(glow, method_name)(arg)
-
-    async def test_set_dimming_time_fires_callback(self, glow: CasperGlow) -> None:
-        glow._state.brightness_level = 70  # brightness must be known
-        states: list[Any] = []
-        glow.register_callback(lambda s: states.append(s))
-
-        await glow.set_dimming_time(45)
-
-        assert len(states) == 1
-        assert states[0].configured_dimming_time_minutes == 45
-
-    async def test_set_dimming_time_unknown_brightness_raises(
+    async def test_set_brightness_and_dimming_time_fires_callback(
         self, glow: CasperGlow
     ) -> None:
-        # brightness_level is None by default — no set_brightness() call yet
-        with pytest.raises(ValueError, match="Brightness level is unknown"):
-            await glow.set_dimming_time(30)
-
-    async def test_set_dimming_time_uses_known_brightness(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client(ready_token=42)
-        glow = CasperGlow(device, client=client)
-        glow._state.brightness_level = 80  # previously known
-
-        await glow.set_dimming_time(15)
-
-        calls = client.write_gatt_char.call_args_list
-        expected_body = build_brightness_body(80, 15 * 60_000)
-        expected_packet = build_action_packet(42, expected_body)
-        assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
-
-    async def test_set_brightness_sends_correct_packet(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client(ready_token=42)
-        glow = CasperGlow(device, client=client)
-
-        await glow.set_brightness(80)
-
-        calls = client.write_gatt_char.call_args_list
-        assert len(calls) == 2
-        # Should send brightness body with 80% and default dimming time (15 min)
-        expected_body = build_brightness_body(80, 15 * 60_000)
-        expected_packet = build_action_packet(42, expected_body)
-        assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
-        assert glow.state.brightness_level == 80
-
-    async def test_set_brightness_fires_callback(self, glow: CasperGlow) -> None:
         states: list[Any] = []
         glow.register_callback(lambda s: states.append(s))
 
-        await glow.set_brightness(70)
+        await glow.set_brightness_and_dimming_time(70, 15)
 
         assert len(states) == 1
         assert states[0].brightness_level == 70
+        assert states[0].configured_dimming_time_minutes == 15
 
-    async def test_set_brightness_ignores_remaining_dimming_time(self) -> None:
-        # dimming_time_minutes is a countdown from the device and not a valid
-        # configured value; set_brightness() must not use it as a fallback.
-        device = _make_ble_device()
-        client = _make_mock_client(ready_token=42)
-        glow = CasperGlow(device, client=client)
-        glow._state.dimming_time_minutes = 60  # remaining time — must be ignored
+    async def test_set_brightness_and_dimming_time_invalid_level_raises(
+        self, glow: CasperGlow
+    ) -> None:
+        with pytest.raises(ValueError, match="Invalid brightness"):
+            await glow.set_brightness_and_dimming_time(50, 15)
 
-        await glow.set_brightness(90)
-
-        calls = client.write_gatt_char.call_args_list
-        expected_body = build_brightness_body(90, DIMMING_TIME_MINUTES[0] * 60_000)
-        expected_packet = build_action_packet(42, expected_body)
-        assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
+    async def test_set_brightness_and_dimming_time_invalid_dimming_time_raises(
+        self, glow: CasperGlow
+    ) -> None:
+        with pytest.raises(ValueError, match="Invalid dimming time"):
+            await glow.set_brightness_and_dimming_time(80, 20)
 
     async def test_query_state_sends_query_packet(self) -> None:
         device = _make_ble_device()
@@ -524,20 +460,6 @@ class TestCasperGlow:
 
         assert result is False
         assert glow.state.raw_state is None
-
-    async def test_set_brightness_uses_configured_time(self) -> None:
-        device = _make_ble_device()
-        client = _make_mock_client(ready_token=42)
-        glow = CasperGlow(device, client=client)
-        glow._state.configured_dimming_time_minutes = 60
-        glow._state.dimming_time_minutes = 44  # stale remaining — must not be used
-
-        await glow.set_brightness(90)
-
-        calls = client.write_gatt_char.call_args_list
-        expected_body = build_brightness_body(90, 60 * 60_000)
-        expected_packet = build_action_packet(42, expected_body)
-        assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
 
     async def test_turn_off_zeros_dimming_time(self, glow: CasperGlow) -> None:
         glow._state.dimming_time_minutes = 30
