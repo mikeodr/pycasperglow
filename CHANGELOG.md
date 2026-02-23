@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-02-23
+
+### Changed
+
+- Remaining dimming time is no longer updated when selecting new dimming option, this reflects true device operation
+
 ## [0.3.5] - 2026-02-23
 
 ### Changed
@@ -108,6 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for external `BleakClient` (Home Assistant integration).
 - Typed package with `py.typed` marker.
 
+[0.3.6]: https://github.com/mikeodr/pycasperglow/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/mikeodr/pycasperglow/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/mikeodr/pycasperglow/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/mikeodr/pycasperglow/compare/v0.3.2...v0.3.3
