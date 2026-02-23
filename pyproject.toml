@@ -10,15 +10,16 @@ authors = [
 ]
 description = "Async Python library for controlling Casper Glow lights via BLE"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
 keywords = ["casper", "glow", "ble", "bluetooth", "home-assistant", "smart-home"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
     "Topic :: Home Automation",
     "Typing :: Typed",
