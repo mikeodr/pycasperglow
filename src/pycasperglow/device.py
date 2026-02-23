@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -25,11 +26,53 @@ from .protocol import (
     build_action_packet,
     build_brightness_body,
     extract_token_from_notify,
+    parse_protobuf_fields,
     parse_state_response,
     payload_contains_ready_marker,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+_BATTERY_PERCENTAGE: dict[int, int] = {3: 25, 4: 50, 5: 75, 6: 100}
+
+
+class BatteryLevel(enum.IntEnum):
+    """Discrete battery level reported by the device.
+
+    The Casper Glow encodes battery state as a 4-step enum in field 7 of
+    the state response (a nested protobuf sub-message; inner field 2).
+    The raw values map to approximate percentages:
+
+      PCT_25  (3) — ~25 % — low; device should be charged.
+      PCT_50  (4) — ~50 %.
+      PCT_75  (5) — ~75 %.
+      PCT_100 (6) — ~100 % — fully charged.
+
+    Values not listed here are mapped to ``None`` by :meth:`from_raw`.
+    """
+
+    PCT_25 = 3
+    PCT_50 = 4
+    PCT_75 = 5
+    PCT_100 = 6
+
+    @property
+    def percentage(self) -> int:
+        """Return the approximate battery percentage as an integer."""
+        return _BATTERY_PERCENTAGE[self.value]
+
+    def __str__(self) -> str:
+        return f"{self.percentage}%"
+
+    @classmethod
+    def from_raw(cls, value: int) -> BatteryLevel | None:
+        """Return the matching member, or None if the value is unrecognised."""
+        try:
+            return cls(value)
+        except ValueError:
+            _LOGGER.debug("Unrecognised battery level raw value: %d", value)
+            return None
 
 
 @dataclass
@@ -38,7 +81,7 @@ class GlowState:
 
     is_on: bool | None = None
     brightness_level: int | None = None
-    battery_level: int | None = None
+    battery_level: BatteryLevel | None = None
     dimming_time_minutes: int | None = None  # remaining time from device
     configured_dimming_time_minutes: int | None = None  # set only by set_dimming_time()
     is_paused: bool | None = None
@@ -114,7 +157,9 @@ class CasperGlow:
         * sub-field 3: configured total dimming duration in milliseconds
             (0 when off)
         * sub-field 4: paused indicator (0 = not paused, 1 = paused)
-        * sub-field 8: battery percentage (always 100 in captures)
+        * sub-field 7: nested message whose inner field 2 is a discrete
+            battery level enum (3 = 25 %, 4 = 50 %, 5 = 75 %, 6 = 100 %).
+        * sub-field 8: always 100 in all captures — NOT the battery level.
         """
         state_fields = parse_state_response(data)
         if state_fields is None:
@@ -152,11 +197,16 @@ class CasperGlow:
         if sf4 is not None and isinstance(sf4[0], int):
             self._state.is_paused = sf4[0] != 0
 
-        # Sub-field 8: battery percentage (always 100 in captures).
+        # Sub-field 7: battery level (nested message, inner field 2).
+        # Discrete enum — observed values: 6 = full, 3 = low.
+        # Sub-field 8 is always 100 in all captures and is NOT the battery.
         # Brightness is not reported in the state query response.
-        sf8 = state_fields.get(8)
-        if sf8 is not None and isinstance(sf8[0], int):
-            self._state.battery_level = sf8[0]
+        sf7 = state_fields.get(7)
+        if sf7 is not None and isinstance(sf7[0], bytes):
+            inner = parse_protobuf_fields(sf7[0])
+            inner2 = inner.get(2)
+            if inner2 is not None and isinstance(inner2[0], int):
+                self._state.battery_level = BatteryLevel.from_raw(inner2[0])
 
         _LOGGER.debug("Parsed state from notification: %s", self._state)
         return True

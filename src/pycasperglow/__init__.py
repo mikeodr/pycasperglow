@@ -6,7 +6,7 @@ from .const import (
     DIMMING_TIME_MINUTES,
     SERVICE_UUID,
 )
-from .device import CasperGlow, GlowState
+from .device import BatteryLevel, CasperGlow, GlowState
 from .discovery import discover_glows, is_casper_glow
 from .exceptions import (
     CasperGlowError,
@@ -17,6 +17,7 @@ from .exceptions import (
 
 __all__ = [
     "BRIGHTNESS_LEVELS",
+    "BatteryLevel",
     "CasperGlow",
     "CasperGlowError",
     "CommandError",

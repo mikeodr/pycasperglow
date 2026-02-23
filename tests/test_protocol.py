@@ -124,7 +124,9 @@ class TestTokenExtraction:
 class TestBuildActionPacket:
     """Action packet building tests."""
 
-    @pytest.mark.parametrize("body", [ACTION_BODY_ON, ACTION_BODY_OFF], ids=["on", "off"])
+    @pytest.mark.parametrize(
+        "body", [ACTION_BODY_ON, ACTION_BODY_OFF], ids=["on", "off"]
+    )
     def test_build_command_packet(self, body: bytes) -> None:
         packet = build_action_packet(42, body)
         # field1=1, field2=token(42), field4=len-delimited(body)
@@ -230,21 +232,24 @@ class TestParseStateResponse:
         assert parse_state_response(notification) is None
 
     def test_off_state(self) -> None:
-        # sub-field 3 = 0 → OFF, sub-field 8 = 100 (battery)
+        # sub-field 3 = 0 → OFF, sub-field 8 = 100 (always 100, not battery)
         state_body = b"\x08\x03\x18\x00\x40\x64"
         notification = self._make_state_notification(state_body)
 
         result = parse_state_response(notification)
         assert result is not None
         assert result[3] == [0]
-        assert result[8] == [100]  # battery
+        assert result[8] == [100]  # constant — always 100, NOT the battery level
 
     def test_on_state(self) -> None:
-        # sf1 = 1 → ON, sf3 = 900000 (dim time), sf8 = 80 (battery)
+        # sf1 = 1 → ON, sf3 = 900000 (dim time)
+        # battery is encoded in sf7 inner-field 2 (discrete enum: 6=full, 3=low)
+        battery_inner = b"\x10\x05"  # inner field 2 = 5
+        battery_sf7 = b"\x3a" + encode_varint(len(battery_inner)) + battery_inner
         state_body = (
             b"\x08\x01"  # sf1 = 1 (on)
             + b"\x18\xa0\xf76"  # sf3 = 900000
-            + b"\x40\x50"  # sf8 = 80 (battery)
+            + battery_sf7  # sf7: battery level enum = 5
         )
         notification = self._make_state_notification(state_body)
 
@@ -252,7 +257,9 @@ class TestParseStateResponse:
         assert result is not None
         assert result[1] == [1]
         assert result[3] == [900000]
-        assert result[8] == [80]  # battery
+        assert 7 in result
+        inner = parse_protobuf_fields(result[7][0])
+        assert inner[2] == [5]  # battery level enum
 
     def test_empty_payload(self) -> None:
         assert parse_state_response(b"") is None
@@ -272,33 +279,74 @@ class TestParseStateResponse:
                 "08f091b04310011891a0e78c01"
                 "22179a01140803100018002000"
                 "280030003a04080010064064",
-                {1: [3], 3: [0], 8: [100]},  # off
+                {
+                    1: [3],
+                    3: [0],
+                    7: [b"\x08\x00\x10\x06"],
+                    8: [100],
+                },  # off, full battery
             ),
             (
                 "08c392b043100118aac89c15"
                 "221b9a0118080110dbc20418"
                 "a0f7362000280030003a0408"
                 "0310064064",
-                {1: [1], 3: [900000], 4: [0], 8: [100]},  # on
+                {
+                    1: [1],
+                    3: [900000],
+                    4: [0],
+                    7: [b"\x08\x03\x10\x06"],
+                    8: [100],
+                },  # on, full battery
             ),
             (
                 "08f091b0431001189fb7e0cd07"
                 "221b9a01180801109cba0a18"
                 "a0f7362001280030003a0408"
                 "0010064064",
-                {1: [1], 3: [900000], 4: [1], 8: [100]},  # paused
+                {
+                    1: [1],
+                    3: [900000],
+                    4: [1],
+                    7: [b"\x08\x00\x10\x06"],
+                    8: [100],
+                },  # paused, full battery
+            ),
+            (
+                "08f091b043100118ecc8f89808"
+                "22179a01140803100018002000"
+                "280030003a04080010034064",
+                {
+                    1: [3],
+                    7: [b"\x08\x00\x10\x03"],
+                    8: [100],
+                },  # off, low battery (level 3)
             ),
         ],
-        ids=["off", "on", "paused"],
+        ids=["off", "on", "paused", "off-low-battery"],
     )
     def test_real_device_notification(
-        self, raw_hex: str, expected_fields: dict[int, list[int]]
+        self, raw_hex: str, expected_fields: dict[int, list[int | bytes]]
     ) -> None:
         """Parse actual notifications captured from a real Glow device."""
         result = parse_state_response(bytes.fromhex(raw_hex))
         assert result is not None
         for field, value in expected_fields.items():
             assert result[field] == value
+
+    def test_battery_level_in_subfield7(self) -> None:
+        """Battery level is inner field 2 of sub-field 7 (discrete enum)."""
+        # Build a state body with sf7 inner-field2 = 3 (low battery)
+        battery_inner = b"\x10\x03"  # field 2 = 3
+        battery_sf7 = b"\x3a" + encode_varint(len(battery_inner)) + battery_inner
+        state_body = b"\x08\x03" + battery_sf7  # sf1=3 (off) + sf7
+        notification = self._make_state_notification(state_body)
+
+        result = parse_state_response(notification)
+        assert result is not None
+        assert 7 in result
+        inner = parse_protobuf_fields(result[7][0])
+        assert inner[2] == [3]  # low battery
 
 
 class TestBuildBrightnessBody:

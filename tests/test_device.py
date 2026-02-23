@@ -18,7 +18,7 @@ from pycasperglow.const import (
     RECONNECT_PACKET,
     WRITE_CHAR_UUID,
 )
-from pycasperglow.device import CasperGlow
+from pycasperglow.device import BatteryLevel, CasperGlow
 from pycasperglow.exceptions import HandshakeTimeoutError
 from pycasperglow.protocol import (
     build_action_packet,
@@ -69,7 +69,7 @@ def _make_state_notification(
     token: int = 42,
     dimming_ms: int = 0,
     remaining_ms: int = 0,
-    battery: int = 100,
+    battery: int = 6,
 ) -> bytes:
     """Build a notification with field 1 (token) and field 4 containing field 19.
 
@@ -78,12 +78,16 @@ def _make_state_notification(
     * sub-field 2: remaining dimming time in milliseconds (counts down to 0 when off)
     * sub-field 3: configured total dimming duration in milliseconds
     * sub-field 4: paused indicator (0 = not paused, 1 = paused)
-    * sub-field 8: battery percentage (always 100 in captures)
+    * sub-field 7: nested message with inner field 2 = battery level enum
+        (6 = full, 3 = low; others unknown)
     """
     from pycasperglow.protocol import STATE_RESPONSE_FIELD
 
     power_indicator = 1 if is_on else 3
     paused_indicator = 1 if is_paused else 0
+    # Sub-field 7: nested message with inner field 2 = battery enum
+    battery_inner = b"\x10" + encode_varint(battery)
+    battery_sf7 = b"\x3a" + encode_varint(len(battery_inner)) + battery_inner
     state_inner = (
         b"\x08"
         + encode_varint(power_indicator)  # sub-field 1
@@ -93,8 +97,7 @@ def _make_state_notification(
         + encode_varint(dimming_ms)  # sub-field 3: configured total
         + b"\x20"
         + encode_varint(paused_indicator)  # sub-field 4
-        + b"\x40"
-        + encode_varint(battery)  # sub-field 8
+        + battery_sf7  # sub-field 7
     )
     # field 19, wire type 2
     tag_19 = (STATE_RESPONSE_FIELD << 3) | 2
@@ -115,6 +118,7 @@ def _make_mock_client_with_state(
     is_on: bool = True,
     is_paused: bool = False,
     dimming_ms: int = 900_000,
+    battery: int = 6,
 ) -> AsyncMock:
     """Create a mock BleakClient that simulates handshake + state response."""
     client = AsyncMock()
@@ -136,6 +140,7 @@ def _make_mock_client_with_state(
                     token=ready_token,
                     dimming_ms=dimming_ms,
                     remaining_ms=dimming_ms,
+                    battery=battery,
                 )
             )
             client._notify_callback(None, state_notif)
@@ -312,9 +317,7 @@ class TestCasperGlow:
         with pytest.raises(ValueError, match=match):
             await getattr(glow, method_name)(arg)
 
-    async def test_set_dimming_time_fires_callback(
-        self, glow: CasperGlow
-    ) -> None:
+    async def test_set_dimming_time_fires_callback(self, glow: CasperGlow) -> None:
         glow._state.brightness_level = 70  # brightness must be known
         states: list[Any] = []
         glow.register_callback(lambda s: states.append(s))
@@ -359,9 +362,7 @@ class TestCasperGlow:
         assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
         assert glow.state.brightness_level == 80
 
-    async def test_set_brightness_fires_callback(
-        self, glow: CasperGlow
-    ) -> None:
+    async def test_set_brightness_fires_callback(self, glow: CasperGlow) -> None:
         states: list[Any] = []
         glow.register_callback(lambda s: states.append(s))
 
@@ -406,6 +407,26 @@ class TestCasperGlow:
 
         state = await glow.query_state()
         assert state.is_on is False
+
+    async def test_query_state_battery_level(self) -> None:
+        """battery_level is BatteryLevel.PCT_25 when the device reports raw value 3."""
+        device = _make_ble_device()
+        client = _make_mock_client_with_state(ready_token=42, is_on=False, battery=3)
+        glow = CasperGlow(device, client=client)
+
+        state = await glow.query_state()
+        assert state.battery_level is BatteryLevel.PCT_25
+        assert state.battery_level.percentage == 25  # type: ignore[union-attr]
+
+    async def test_query_state_battery_level_full(self) -> None:
+        """battery_level is BatteryLevel.PCT_100 when the device reports raw value 6."""
+        device = _make_ble_device()
+        client = _make_mock_client_with_state(ready_token=42, is_on=True, battery=6)
+        glow = CasperGlow(device, client=client)
+
+        state = await glow.query_state()
+        assert state.battery_level is BatteryLevel.PCT_100
+        assert state.battery_level.percentage == 100  # type: ignore[union-attr]
 
     async def test_query_state_brightness(self) -> None:
         device = _make_ble_device()
@@ -518,9 +539,7 @@ class TestCasperGlow:
         expected_packet = build_action_packet(42, expected_body)
         assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
 
-    async def test_turn_off_zeros_dimming_time(
-        self, glow: CasperGlow
-    ) -> None:
+    async def test_turn_off_zeros_dimming_time(self, glow: CasperGlow) -> None:
         glow._state.dimming_time_minutes = 30
 
         await glow.turn_off()
