@@ -7,7 +7,7 @@ import fnmatch
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from bleak import BLEDevice
+    from bleak.backends.device import BLEDevice
 
 
 def build_parser(description: str) -> argparse.ArgumentParser:

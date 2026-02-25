@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "examples"))
 from pycasperglow import CasperGlow, discover_glows
 from pycasperglow.protocol import parse_protobuf_fields
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -105,7 +105,7 @@ async def main() -> None:
     args = parser.parse_args()
 
     _LOGGER.info("Scanning for Casper Glow lights (%.0fs)...", args.timeout)
-    devices = await discover_glows(timeout=args.timeout)
+    devices = [dev async for dev in discover_glows(timeout=args.timeout)]
 
     if not devices:
         _LOGGER.info("No Casper Glow lights found.")
@@ -124,36 +124,33 @@ async def main() -> None:
     for dev in devices:
         _LOGGER.info("  %s (%s)", dev.name, dev.address)
 
-    # Process first matching device
-    dev = devices[0]
-    glow = CasperGlow(dev)
-    _LOGGER.info("Connecting to %s (%s)...", dev.name, dev.address)
+    for dev in devices:
+        glow = CasperGlow(dev)
+        _LOGGER.info("Connecting to %s (%s)...", dev.name, dev.address)
 
-    # Send optional action first
-    if args.action != "none":
-        _LOGGER.info("Sending action: %s", args.action)
-        action_map = {
-            "on": glow.turn_on,
-            "off": glow.turn_off,
-            "pause": glow.pause,
-            "resume": glow.resume,
-        }
+        if args.action != "none":
+            _LOGGER.info("Sending action: %s", args.action)
+            action_map = {
+                "on": glow.turn_on,
+                "off": glow.turn_off,
+                "pause": glow.pause,
+                "resume": glow.resume,
+            }
+            try:
+                await action_map[args.action]()
+                _LOGGER.info("Action sent successfully.")
+            except Exception:
+                _LOGGER.exception("Failed to send action to %s", dev.name)
+                continue
+
+        _LOGGER.info("Querying state...")
         try:
-            await action_map[args.action]()
-            _LOGGER.info("Action sent successfully.")
+            state = await glow.query_state()
+            _LOGGER.info("State result: %s", state)
+            if state.raw_state:
+                _dump_fields(state.raw_state, f"State notification [{dev.name}]")
         except Exception:
-            _LOGGER.exception("Failed to send action")
-            return
-
-    # Query state
-    _LOGGER.info("Querying state...")
-    try:
-        state = await glow.query_state()
-        _LOGGER.info("State result: %s", state)
-        if state.raw_state:
-            _dump_fields(state.raw_state, "State notification")
-    except Exception:
-        _LOGGER.exception("Failed to query state")
+            _LOGGER.exception("Failed to query state from %s", dev.name)
 
 
 if __name__ == "__main__":

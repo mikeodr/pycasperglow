@@ -41,6 +41,10 @@ async def main() -> None:
                 )
                 _LOGGER.info("  Brightness: %s", _fmt(state.brightness_level))
                 _LOGGER.info("  Battery: %s", _fmt(state.battery_level))
+                _LOGGER.info(
+                    "  Charging: %s",
+                    _fmt(state.is_charging, {True: "yes", False: "no"}),
+                )
                 _LOGGER.info("  Paused: %s", _fmt(state.is_paused))
                 _LOGGER.info("  Dimming time: %s", _fmt(state.dimming_time_minutes))
             except Exception:

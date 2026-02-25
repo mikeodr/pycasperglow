@@ -29,7 +29,7 @@ lint: $(VENV)
 
 # Static type checking
 typecheck: $(VENV)
-	$(MYPY) src/ --strict
+	$(MYPY) src/ tests/ examples/ --strict
 
 # Fast check used by pre-commit (no coverage)
 check: lint typecheck
