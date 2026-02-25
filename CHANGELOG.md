@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-02-25
+
+### Added
+
+- `is_charging: bool | None` field on `GlowState` — `True` when the device is plugged in to a charger, `False` when not charging, `None` when unknown.
+- `examples/discovery.py` now prints charging state alongside battery level.
+
+### Fixed
+
+- Charging indicator is correctly read from sf7 inner field 1 (0 = not charging, 3 = charging observed). Sub-field 5 is always 0 in all real-device captures and is not the charging indicator.
+- `BLEDevice` import in `examples/_cli.py` corrected to `bleak.backends.device`.
+- `debug/capture_notifications.py` now queries all discovered devices instead of only the first, and routes logging to stdout.
+
+### Changed
+
+- Makefile `typecheck` target now covers `tests/` and `examples/` in addition to `src/`.
+
 ## [1.0.0] - 2026-02-23
 
 ### Changed
@@ -141,6 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for external `BleakClient` (Home Assistant integration).
 - Typed package with `py.typed` marker.
 
+[1.0.1]: https://github.com/mikeodr/pycasperglow/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/mikeodr/pycasperglow/compare/v0.3.7...v1.0.0
 [0.3.7]: https://github.com/mikeodr/pycasperglow/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/mikeodr/pycasperglow/compare/v0.3.5...v0.3.6
