@@ -65,6 +65,7 @@ def _make_state_notification(
     *,
     is_on: bool = False,
     is_paused: bool = False,
+    is_charging: bool = False,
     token: int = 42,
     dimming_ms: int = 0,
     remaining_ms: int = 0,
@@ -77,15 +78,20 @@ def _make_state_notification(
     * sub-field 2: remaining dimming time in milliseconds (counts down to 0 when off)
     * sub-field 3: configured total dimming duration in milliseconds
     * sub-field 4: paused indicator (0 = not paused, 1 = paused)
-    * sub-field 7: nested message with inner field 2 = battery level enum
+    * sub-field 5: always 0 in all real-device captures — not the charging indicator
+    * sub-field 7: nested message with inner field 1 = charging indicator
+        (0 = not charging, 3 = charging observed); inner field 2 = battery level enum
         (6 = full, 3 = low; others unknown)
     """
     from pycasperglow.protocol import STATE_RESPONSE_FIELD
 
     power_indicator = 1 if is_on else 3
     paused_indicator = 1 if is_paused else 0
-    # Sub-field 7: nested message with inner field 2 = battery enum
-    battery_inner = b"\x10" + encode_varint(battery)
+    # Sub-field 7: nested message with inner field 1 = charging, inner field 2 = battery
+    battery_inner = (
+        b"\x08" + encode_varint(3 if is_charging else 0)  # inner f1: charging
+        + b"\x10" + encode_varint(battery)                 # inner f2: battery
+    )
     battery_sf7 = b"\x3a" + encode_varint(len(battery_inner)) + battery_inner
     state_inner = (
         b"\x08"
@@ -116,6 +122,7 @@ def _make_mock_client_with_state(
     *,
     is_on: bool = True,
     is_paused: bool = False,
+    is_charging: bool = False,
     dimming_ms: int = 900_000,
     battery: int = 6,
 ) -> AsyncMock:
@@ -136,6 +143,7 @@ def _make_mock_client_with_state(
                 _make_state_notification(
                     is_on=is_on,
                     is_paused=is_paused,
+                    is_charging=is_charging,
                     token=ready_token,
                     dimming_ms=dimming_ms,
                     remaining_ms=dimming_ms,
@@ -352,7 +360,7 @@ class TestCasperGlow:
 
         state = await glow.query_state()
         assert state.battery_level is BatteryLevel.PCT_25
-        assert state.battery_level.percentage == 25  # type: ignore[union-attr]
+        assert state.battery_level.percentage == 25
 
     async def test_query_state_battery_level_full(self) -> None:
         """battery_level is BatteryLevel.PCT_100 when the device reports raw value 6."""
@@ -362,7 +370,7 @@ class TestCasperGlow:
 
         state = await glow.query_state()
         assert state.battery_level is BatteryLevel.PCT_100
-        assert state.battery_level.percentage == 100  # type: ignore[union-attr]
+        assert state.battery_level.percentage == 100
 
     async def test_query_state_brightness(self) -> None:
         device = _make_ble_device()
@@ -512,3 +520,21 @@ class TestCasperGlow:
         glow._parse_state_notification(_make_state_notification(is_on=False))
         assert glow.state.configured_dimming_time_minutes == 15
         assert glow.state.dimming_time_minutes == 0
+
+    @pytest.mark.parametrize(
+        ("is_charging", "expected"),
+        [(True, True), (False, False)],
+        ids=["charging", "not-charging"],
+    )
+    async def test_parse_state_charging(
+        self, is_charging: bool, expected: bool
+    ) -> None:
+        """is_charging reflects sf7 inner field 1 of the state notification."""
+        device = _make_ble_device()
+        glow = CasperGlow(device)
+
+        notification = _make_state_notification(is_charging=is_charging)
+        result = glow._parse_state_notification(notification)
+
+        assert result is True
+        assert glow.state.is_charging is expected

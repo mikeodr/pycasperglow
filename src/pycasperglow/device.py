@@ -87,6 +87,7 @@ class GlowState:
         None  # set by set_brightness_and_dimming_time()
     )
     is_paused: bool | None = None
+    is_charging: bool | None = None
     raw_state: bytes | None = None
 
 
@@ -159,8 +160,10 @@ class CasperGlow:
         * sub-field 3: configured total dimming duration in milliseconds
             (0 when off)
         * sub-field 4: paused indicator (0 = not paused, 1 = paused)
-        * sub-field 7: nested message whose inner field 2 is a discrete
-            battery level enum (3 = 25 %, 4 = 50 %, 5 = 75 %, 6 = 100 %).
+        * sub-field 5: always 0 in all real-device captures — not the charging indicator
+        * sub-field 7: nested message whose inner field 1 is a charging indicator
+            (0 = not charging, 3 = charging observed); inner field 2 is a discrete
+            battery level enum (3=25%, 4=50%, 5=75%, 6=100%).
         * sub-field 8: always 100 in all captures — NOT the battery level.
         """
         state_fields = parse_state_response(data)
@@ -199,13 +202,17 @@ class CasperGlow:
         if sf4 is not None and isinstance(sf4[0], int):
             self._state.is_paused = sf4[0] != 0
 
-        # Sub-field 7: battery level (nested message, inner field 2).
-        # Discrete enum — observed values: 6 = full, 3 = low.
-        # Sub-field 8 is always 100 in all captures and is NOT the battery.
-        # Brightness is not reported in the state query response.
+        # Sub-field 7: nested message.
+        #   Inner field 1: charging indicator (0 = not charging, ≥1 = charging;
+        #     3 observed in practice).
+        #   Inner field 2: battery level enum (3=25%, 4=50%, 5=75%, 6=100%).
+        # Sub-field 8 is always 100 and is NOT the battery level.
         sf7 = state_fields.get(7)
         if sf7 is not None and isinstance(sf7[0], bytes):
             inner = parse_protobuf_fields(sf7[0])
+            inner1 = inner.get(1)
+            if inner1 is not None and isinstance(inner1[0], int):
+                self._state.is_charging = inner1[0] != 0
             inner2 = inner.get(2)
             if inner2 is not None and isinstance(inner2[0], int):
                 self._state.battery_level = BatteryLevel.from_raw(inner2[0])

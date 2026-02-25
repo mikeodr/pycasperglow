@@ -258,6 +258,7 @@ class TestParseStateResponse:
         assert result[1] == [1]
         assert result[3] == [900000]
         assert 7 in result
+        assert isinstance(result[7][0], bytes)
         inner = parse_protobuf_fields(result[7][0])
         assert inner[2] == [5]  # battery level enum
 
@@ -322,8 +323,30 @@ class TestParseStateResponse:
                     8: [100],
                 },  # off, low battery (level 3)
             ),
+            (
+                "08f091b043100118baf8ed800622179a01140803100018002000280030003a04080010054064",
+                {
+                    1: [3],
+                    5: [0],
+                    7: [b"\x08\x00\x10\x05"],
+                    8: [100],
+                },  # off, 75% battery, not charging
+            ),
+            (
+                "08c392b0431001189ef1c3e80222179a01140803100018002000280030003a04080310064064",
+                {
+                    1: [3],
+                    5: [0],                     # sf5 always 0, even when charging
+                    # inner f1=3 (charging), inner f2=6 (100%)
+                    7: [b"\x08\x03\x10\x06"],
+                    8: [100],
+                },  # off, 100% battery, charging (Jar_086c0943)
+            ),
         ],
-        ids=["off", "on", "paused", "off-low-battery"],
+        ids=[
+            "off", "on", "paused", "off-low-battery",
+            "off-75pct-not-charging", "off-100pct-charging",
+        ],
     )
     def test_real_device_notification(
         self, raw_hex: str, expected_fields: dict[int, list[int | bytes]]
@@ -345,8 +368,36 @@ class TestParseStateResponse:
         result = parse_state_response(notification)
         assert result is not None
         assert 7 in result
+        assert isinstance(result[7][0], bytes)
         inner = parse_protobuf_fields(result[7][0])
         assert inner[2] == [3]  # low battery
+
+    @pytest.mark.parametrize(
+        ("sf7_inner_f1", "expected_sf7"),
+        [
+            (0, b"\x08\x00\x10\x06"),   # not charging
+            (3, b"\x08\x03\x10\x06"),   # charging
+        ],
+        ids=["not-charging", "charging"],
+    )
+    def test_charging_indicator_in_sf7_inner_f1(
+        self, sf7_inner_f1: int, expected_sf7: bytes
+    ) -> None:
+        """SF7 inner field 1 is the charging indicator.
+
+        0=not charging, 3=charging observed.
+
+        SF5 (tag 0x28) is always 0 in all real-device captures and is NOT the charging
+        indicator.
+        """
+        battery_inner = b"\x08" + encode_varint(sf7_inner_f1) + b"\x10\x06"
+        battery_sf7 = b"\x3a" + encode_varint(len(battery_inner)) + battery_inner
+        state_body = b"\x08\x03" + battery_sf7  # sf1=3 (off) + sf7
+        notification = self._make_state_notification(state_body)
+
+        result = parse_state_response(notification)
+        assert result is not None
+        assert result[7] == [expected_sf7]
 
 
 class TestBuildBrightnessBody:
@@ -369,7 +420,9 @@ class TestBuildBrightnessBody:
         """Exact byte output verified against iOS app BLE captures; dimming=15 min."""
         body = build_brightness_body(pct, 900_000)
         assert body == bytes.fromhex(expected_hex)
-        inner_fields = parse_protobuf_fields(parse_protobuf_fields(body)[18][0])
+        outer = parse_protobuf_fields(body)[18][0]
+        assert isinstance(outer, bytes)
+        inner_fields = parse_protobuf_fields(outer)
         assert inner_fields[2] == [pct]
         assert inner_fields[3] == [900_000]
 
