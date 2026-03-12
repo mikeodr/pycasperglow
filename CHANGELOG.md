@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-03-11
+
+### Added
+
+- `GATT_SERVICE_UUID` constant — replaces `SERVICE_UUID` to clarify that this UUID is only available after connection, not in BLE advertisements.
+- `MANUFACTURER_ID` constant (`0xFFFF`) — the manufacturer company ID present in Casper Glow advertisement data.
+- `debug/dump_advertisement.py` — debug script to scan and dump raw BLE advertisement data from Casper Glow devices.
+
+### Changed
+
+- `is_casper_glow()` no longer checks `adv.service_uuids`. Real-device scanning confirmed that Casper Glow lights advertise no service UUIDs; detection relies on the local name prefix `"Jar"`.
+
+### Removed
+
+- `SERVICE_UUID` constant — replaced by `GATT_SERVICE_UUID`. This is a **breaking change** for code that imported `SERVICE_UUID` directly.
+
 ## [1.0.1] - 2026-02-25
 
 ### Added
