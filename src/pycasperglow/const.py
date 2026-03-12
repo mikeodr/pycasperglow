@@ -1,10 +1,14 @@
 """BLE UUIDs and packet constants for Casper Glow."""
 
-SERVICE_UUID = "9bb30001-fee9-4c24-8361-443b5b7c88f6"
+# GATT service UUID — available after connection, NOT advertised in BLE scans.
+GATT_SERVICE_UUID = "9bb30001-fee9-4c24-8361-443b5b7c88f6"
 WRITE_CHAR_UUID = "9bb30002-fee9-4c24-8361-443b5b7c88f6"
 READ_CHAR_UUID = "9bb30003-fee9-4c24-8361-443b5b7c88f6"
 
 DEVICE_NAME_PREFIX = "Jar"
+
+# BLE manufacturer ID used in advertisement data (0xFFFF = Bluetooth SIG reserved).
+MANUFACTURER_ID = 0xFFFF
 
 RECONNECT_PACKET = bytes.fromhex("080122026a00")
 READY_MARKER = bytes.fromhex("72020800")

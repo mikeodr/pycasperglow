@@ -9,17 +9,23 @@ from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
-from .const import DEVICE_NAME_PREFIX, SERVICE_UUID
+from .const import DEVICE_NAME_PREFIX, MANUFACTURER_ID
 
 
 def is_casper_glow(device: BLEDevice, adv: AdvertisementData) -> bool:
-    """Return True if the device appears to be a Casper Glow."""
-    if adv.service_uuids and SERVICE_UUID.lower() in (
-        u.lower() for u in adv.service_uuids
-    ):
-        return True
+    """Return True if the device appears to be a Casper Glow.
+
+    Casper Glow lights do not advertise a service UUID.  Detection relies
+    on the local name prefix ("Jar") and, as a secondary signal, the
+    manufacturer-specific data company ID (0xFFFF).
+    """
     name = adv.local_name or device.name or ""
-    return name.startswith(DEVICE_NAME_PREFIX)
+    if name.startswith(DEVICE_NAME_PREFIX):
+        return True
+    # Fallback: manufacturer data with the known company ID + name present
+    if MANUFACTURER_ID in adv.manufacturer_data and name:
+        return name.startswith(DEVICE_NAME_PREFIX)
+    return False
 
 
 async def discover_glows(timeout: float = 10.0) -> AsyncIterator[BLEDevice]:

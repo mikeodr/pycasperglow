@@ -45,7 +45,7 @@ This is a src-layout package (`src/pycasperglow/`). The library has a clean sepa
 
 - **`protocol.py`** — Pure functions (no I/O) for protobuf varint encoding/decoding, session token extraction from BLE notifications, and action packet construction. All protocol logic is testable without mocks.
 - **`device.py`** — `CasperGlow` async client that orchestrates the BLE connection state machine: connect → subscribe notifications → write reconnect packet → wait for ready marker → extract token → send action packet → disconnect. Accepts an optional external `BleakClient` for Home Assistant integration (when provided, the client is not disconnected by the library).
-- **`discovery.py`** — `is_casper_glow()` for identifying devices by service UUID or name prefix ("Jar"), and `discover_glows()` for standalone scanning (not used by HA).
+- **`discovery.py`** — `is_casper_glow()` for identifying devices by local name prefix ("Jar"), and `discover_glows()` for standalone scanning (not used by HA).
 - **`const.py`** — All BLE UUIDs, packet constants as `bytes` objects, and timeout values.
 - **`exceptions.py`** — `CasperGlowError` base, with `ConnectionError`, `HandshakeTimeoutError`, and `CommandError` subclasses.
 
@@ -54,6 +54,7 @@ This is a src-layout package (`src/pycasperglow/`). The library has a clean sepa
 - **Fresh connection per command** — each `turn_on()`/`turn_off()` call establishes a new connection, per Home Assistant BLE best practices.
 - **External client ownership** — when a `BleakClient` is passed to `CasperGlow`, the library never disconnects it. Only self-created connections are cleaned up in the `finally` block.
 - **pytest-asyncio auto mode** — async tests don't need `@pytest.mark.asyncio` decorators.
+- **No advertised service UUID** — Casper Glow devices do NOT advertise a service UUID in their BLE advertisement data. The GATT service UUID (`9bb30001-...`) is only available after connection. Discovery relies on the local name prefix `"Jar"` and manufacturer ID `0xFFFF`. For Home Assistant integrations, use `local_name` in the manifest, not `service_uuid`.
 - **Brightness command includes dimming time** — the BLE protocol sends brightness and dimming time together in a single field-18 protobuf message. `set_brightness_and_dimming_time(level, dimming_time_minutes)` requires both values explicitly; there is no separate setter for each.
 - **Battery level from state query** — the battery level is a 4-step discrete enum (`BatteryLevel`) encoded in sub-field 7 of the state response (a nested protobuf message whose inner field 2 holds the value). Raw values map to percentages: 3 = 25 %, 4 = 50 %, 5 = 75 %, 6 = 100 %. Sub-field 8 is always 100 across all captures and is NOT the battery level. Brightness is not reported in the state query response.
 - **Sub-field 5: NOT the charging indicator** — sub-field 5 of the field-19 state response is always 0 in all real-device captures, including on a confirmed-charging device. Its meaning is unknown; no action is taken on it. Do not use sf5 for charging state.

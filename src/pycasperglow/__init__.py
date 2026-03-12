@@ -4,7 +4,8 @@ from .const import (
     BRIGHTNESS_LEVELS,
     DEVICE_NAME_PREFIX,
     DIMMING_TIME_MINUTES,
-    SERVICE_UUID,
+    GATT_SERVICE_UUID,
+    MANUFACTURER_ID,
 )
 from .device import BatteryLevel, CasperGlow, GlowState
 from .discovery import discover_glows, is_casper_glow
@@ -24,9 +25,10 @@ __all__ = [
     "ConnectionError",
     "DEVICE_NAME_PREFIX",
     "DIMMING_TIME_MINUTES",
+    "GATT_SERVICE_UUID",
     "GlowState",
     "HandshakeTimeoutError",
-    "SERVICE_UUID",
+    "MANUFACTURER_ID",
     "discover_glows",
     "is_casper_glow",
 ]

@@ -19,8 +19,7 @@ import asyncio
 from pycasperglow import discover_glows
 
 async def main():
-    devices = await discover_glows(timeout=10.0)
-    for device in devices:
+    async for device in discover_glows(timeout=10.0):
         print(f"{device.name} ({device.address})")
 
 asyncio.run(main())
@@ -33,12 +32,13 @@ import asyncio
 from pycasperglow import CasperGlow, discover_glows
 
 async def main():
-    devices = await discover_glows()
-    if not devices:
+    glow = None
+    async for device in discover_glows():
+        glow = CasperGlow(device)
+        break
+    if glow is None:
         print("No Casper Glow found")
         return
-
-    glow = CasperGlow(devices[0])
     await glow.turn_on()
     await asyncio.sleep(5)
     await glow.turn_off()
@@ -63,14 +63,42 @@ When an external client is provided, `pycasperglow` will not disconnect it — t
 
 Async client for a single Casper Glow light.
 
-- **`turn_on()`** — Turn the light on.
-- **`turn_off()`** — Turn the light off.
-- **`name`** — Device name (property).
-- **`address`** — Device BLE address (property).
+| Method / Property | Description |
+|-------------------|-------------|
+| `turn_on()` | Turn the light on |
+| `turn_off()` | Turn the light off |
+| `pause()` | Pause the active dimming sequence |
+| `resume()` | Resume a paused dimming sequence |
+| `set_brightness_and_dimming_time(level, dimming_time_minutes)` | Set brightness (60–100 %) and dimming duration (15, 30, 45, 60, or 90 min). Both required. |
+| `query_state()` | Query current device state; returns `GlowState` |
+| `handshake()` | Test connectivity without sending a command |
+| `register_callback(cb)` | Register a callback invoked on every state update |
+| `state` | Current `GlowState` property (last known, or default) |
+| `name` | Device name (property) |
+| `address` | BLE address (property) |
+
+### `GlowState`
+
+Dataclass returned by `query_state()` and passed to registered callbacks.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `is_on` | `bool \| None` | `True` when on, `False` when off |
+| `is_paused` | `bool \| None` | `True` when dimming is paused |
+| `is_charging` | `bool \| None` | `True` when plugged in to charger |
+| `battery_level` | `BatteryLevel \| None` | Discrete battery level |
+| `brightness_level` | `int \| None` | Last-set brightness % (not reported by device) |
+| `dimming_time_minutes` | `int \| None` | Remaining dimming time (from device) |
+| `configured_dimming_time_minutes` | `int \| None` | Total configured duration |
+
+### `BatteryLevel`
+
+`IntEnum` with four members: `PCT_25`, `PCT_50`, `PCT_75`, `PCT_100`.
+Each has a `.percentage` property returning `25`, `50`, `75`, or `100`.
 
 ### `discover_glows(timeout=10.0)`
 
-Scan for Casper Glow devices. Returns a list of `BLEDevice` objects. For standalone use — Home Assistant uses its own discovery.
+Scan for Casper Glow devices. Async generator that yields `BLEDevice` objects as they are found. For standalone use — Home Assistant uses its own discovery.
 
 ### `is_casper_glow(device, adv)`
 
@@ -105,8 +133,8 @@ Run checks:
 
 ```bash
 pytest tests/ -v --cov=pycasperglow
-mypy src/ --strict
-ruff check src/ tests/
+mypy src/ tests/ examples/ --strict
+ruff check src/ tests/ examples/
 ```
 
 ## Protocol
