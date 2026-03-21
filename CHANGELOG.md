@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-21
+
+### Changed
+
+- `GlowState.dimming_time_minutes` field replaced by `dimming_time_remaining_ms`, which stores the raw millisecond value from the device. A `dimming_time_minutes` read-only property is provided for backward compatibility.
+
 ## [1.1.0] - 2026-03-11
 
 ### Added
@@ -174,6 +180,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for external `BleakClient` (Home Assistant integration).
 - Typed package with `py.typed` marker.
 
+[1.2.0]: https://github.com/mikeodr/pycasperglow/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/mikeodr/pycasperglow/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/mikeodr/pycasperglow/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/mikeodr/pycasperglow/compare/v0.3.7...v1.0.0
