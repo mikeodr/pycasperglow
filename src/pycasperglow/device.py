@@ -82,13 +82,20 @@ class GlowState:
     is_on: bool | None = None
     brightness_level: int | None = None
     battery_level: BatteryLevel | None = None
-    dimming_time_minutes: int | None = None  # remaining time from device
+    dimming_time_remaining_ms: int | None = None  # remaining time in milliseconds
     configured_dimming_time_minutes: int | None = (
         None  # set by set_brightness_and_dimming_time()
     )
     is_paused: bool | None = None
     is_charging: bool | None = None
     raw_state: bytes | None = None
+
+    @property
+    def dimming_time_minutes(self) -> int | None:
+        """Return remaining dimming time in minutes, derived from milliseconds."""
+        if self.dimming_time_remaining_ms is None:
+            return None
+        return self.dimming_time_remaining_ms // 60_000
 
 
 class CasperGlow:
@@ -182,7 +189,7 @@ class CasperGlow:
         # Sub-field 2: remaining dimming time in milliseconds (counts down to 0)
         sf2 = state_fields.get(2)
         if sf2 is not None and isinstance(sf2[0], int):
-            self._state.dimming_time_minutes = sf2[0] // 60_000
+            self._state.dimming_time_remaining_ms = sf2[0]
 
         # Sub-field 3: configured total duration in milliseconds.
         # Only update when non-zero — device reports 0 when off.
@@ -195,7 +202,7 @@ class CasperGlow:
         # Force remaining time to 0 when device is off regardless of what the
         # device reported in sub-field 3.
         if self._state.is_on is False:
-            self._state.dimming_time_minutes = 0
+            self._state.dimming_time_remaining_ms = 0
 
         # Sub-field 4: paused indicator (0 = not paused, 1 = paused)
         sf4 = state_fields.get(4)
@@ -261,7 +268,7 @@ class CasperGlow:
 
         await self._execute_command(ACTION_BODY_OFF)
         self._state.is_on = False
-        self._state.dimming_time_minutes = 0
+        self._state.dimming_time_remaining_ms = 0
         self._fire_callbacks()
 
     async def pause(self) -> None:

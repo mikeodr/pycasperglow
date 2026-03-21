@@ -379,6 +379,7 @@ class TestCasperGlow:
 
         state = await glow.query_state()
         assert state.configured_dimming_time_minutes == 15
+        assert state.dimming_time_remaining_ms == 900_000
         assert state.dimming_time_minutes == 15
 
     async def test_query_state_fires_callback(self) -> None:
@@ -426,6 +427,7 @@ class TestCasperGlow:
         assert glow.state.is_on is True
         assert glow.state.is_paused is False
         assert glow.state.configured_dimming_time_minutes == 15
+        assert glow.state.dimming_time_remaining_ms == 900_000
         assert glow.state.dimming_time_minutes == 15
         assert glow.state.raw_state is not None
 
@@ -439,6 +441,7 @@ class TestCasperGlow:
         assert result is True
         assert glow.state.is_on is False
         assert glow.state.is_paused is False
+        assert glow.state.dimming_time_remaining_ms == 0
         assert glow.state.dimming_time_minutes == 0
 
     async def test_parse_state_paused(self) -> None:
@@ -470,10 +473,11 @@ class TestCasperGlow:
         assert glow.state.raw_state is None
 
     async def test_turn_off_zeros_dimming_time(self, glow: CasperGlow) -> None:
-        glow._state.dimming_time_minutes = 30
+        glow._state.dimming_time_remaining_ms = 1_800_000
 
         await glow.turn_off()
 
+        assert glow.state.dimming_time_remaining_ms == 0
         assert glow.state.dimming_time_minutes == 0
 
     async def test_parse_state_notification_off_zeros_dimming_time(self) -> None:
@@ -483,6 +487,7 @@ class TestCasperGlow:
         notification = _make_state_notification(is_on=False, dimming_ms=900_000)
         glow._parse_state_notification(notification)
 
+        assert glow.state.dimming_time_remaining_ms == 0
         assert glow.state.dimming_time_minutes == 0
 
     async def test_parse_state_reports_remaining_not_total(self) -> None:
@@ -497,6 +502,7 @@ class TestCasperGlow:
         glow._parse_state_notification(notification)
 
         assert glow.state.configured_dimming_time_minutes == 15
+        assert glow.state.dimming_time_remaining_ms == 600_000
         assert glow.state.dimming_time_minutes == 10  # 600_000 ms // 60_000
 
     async def test_parse_state_configured_set_from_ble(self) -> None:
@@ -519,6 +525,7 @@ class TestCasperGlow:
         # Device turns off: sf3 = 0 — configured setting must not be overwritten.
         glow._parse_state_notification(_make_state_notification(is_on=False))
         assert glow.state.configured_dimming_time_minutes == 15
+        assert glow.state.dimming_time_remaining_ms == 0
         assert glow.state.dimming_time_minutes == 0
 
     @pytest.mark.parametrize(
