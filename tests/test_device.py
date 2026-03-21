@@ -89,8 +89,10 @@ def _make_state_notification(
     paused_indicator = 1 if is_paused else 0
     # Sub-field 7: nested message with inner field 1 = charging, inner field 2 = battery
     battery_inner = (
-        b"\x08" + encode_varint(3 if is_charging else 0)  # inner f1: charging
-        + b"\x10" + encode_varint(battery)                 # inner f2: battery
+        b"\x08"
+        + encode_varint(3 if is_charging else 0)  # inner f1: charging
+        + b"\x10"
+        + encode_varint(battery)  # inner f2: battery
     )
     battery_sf7 = b"\x3a" + encode_varint(len(battery_inner)) + battery_inner
     state_inner = (

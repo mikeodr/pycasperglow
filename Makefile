@@ -36,7 +36,7 @@ check: lint typecheck
 	$(PYTEST) tests/ -v
 
 # Full test suite with coverage (for local dev / CI)
-test: lint typecheck
+test: format lint typecheck
 	$(PYTEST) tests/ -v --cov=pycasperglow
 
 clean:

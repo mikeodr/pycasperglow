@@ -336,7 +336,7 @@ class TestParseStateResponse:
                 "08c392b0431001189ef1c3e80222179a01140803100018002000280030003a04080310064064",
                 {
                     1: [3],
-                    5: [0],                     # sf5 always 0, even when charging
+                    5: [0],  # sf5 always 0, even when charging
                     # inner f1=3 (charging), inner f2=6 (100%)
                     7: [b"\x08\x03\x10\x06"],
                     8: [100],
@@ -344,8 +344,12 @@ class TestParseStateResponse:
             ),
         ],
         ids=[
-            "off", "on", "paused", "off-low-battery",
-            "off-75pct-not-charging", "off-100pct-charging",
+            "off",
+            "on",
+            "paused",
+            "off-low-battery",
+            "off-75pct-not-charging",
+            "off-100pct-charging",
         ],
     )
     def test_real_device_notification(
@@ -375,8 +379,8 @@ class TestParseStateResponse:
     @pytest.mark.parametrize(
         ("sf7_inner_f1", "expected_sf7"),
         [
-            (0, b"\x08\x00\x10\x06"),   # not charging
-            (3, b"\x08\x03\x10\x06"),   # charging
+            (0, b"\x08\x00\x10\x06"),  # not charging
+            (3, b"\x08\x03\x10\x06"),  # charging
         ],
         ids=["not-charging", "charging"],
     )
