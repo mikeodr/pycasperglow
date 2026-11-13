@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from bleak import BleakClient
@@ -15,18 +16,28 @@ from bleak_retry_connector import establish_connection
 
 from .const import (
     HANDSHAKE_TIMEOUT,
+    QUERY_RISE_CONFIG_BODY,
     QUERY_STATE_BODY,
     READ_CHAR_UUID,
     RECONNECT_PACKET,
+    RISE_RESPONSE_TIMEOUT,
     STATE_RESPONSE_TIMEOUT,
     WRITE_CHAR_UUID,
 )
 from .exceptions import CommandError, HandshakeTimeoutError
 from .protocol import (
+    RiseAlarm,
+    Weekday,
+    assign_rise_sync_ids,
     build_action_packet,
     build_brightness_body,
+    build_delete_legacy_rise_body,
+    build_rise_config_bodies,
+    build_set_clock_body,
+    decode_rise_alarms,
     extract_token_from_notify,
     parse_protobuf_fields,
+    parse_rise_config_notification,
     parse_state_response,
     payload_contains_ready_marker,
 )
@@ -75,11 +86,32 @@ class BatteryLevel(enum.IntEnum):
             return None
 
 
+class AnimationType(enum.IntEnum):
+    """Active light animation mode reported in sub-field 1 of state notifications."""
+
+    FLOAT = 0
+    DRIFT = 1
+    RISE = 2
+    NONE = 3
+    SLEEPWALKER = 4
+    LINGER = 5
+
+    @classmethod
+    def from_raw(cls, value: int) -> AnimationType | None:
+        """Return the matching member, or None if the value is unrecognised."""
+        try:
+            return cls(value)
+        except ValueError:
+            _LOGGER.debug("Unrecognised animation type raw value: %d", value)
+            return None
+
+
 @dataclass
 class GlowState:
     """Represents the current state of a Casper Glow light."""
 
     is_on: bool | None = None
+    animation_type: AnimationType | None = None
     brightness_level: int | None = None
     battery_level: BatteryLevel | None = None
     dimming_time_remaining_ms: int | None = None  # remaining time in milliseconds
@@ -88,6 +120,7 @@ class GlowState:
     )
     is_paused: bool | None = None
     is_charging: bool | None = None
+    rises: list[RiseAlarm] | None = None
     raw_state: bytes | None = None
 
     @property
@@ -161,10 +194,11 @@ class CasperGlow:
         The device reports state in protobuf field 19 (nested inside
         field 4 of the notification).  The field-19 inner sub-fields:
 
-        * sub-field 1: power/mode indicator (1 = on, 3 = off)
-        * sub-field 2: remaining dimming time in milliseconds
+        * sub-field 1: animation/power mode (:class:`AnimationType`; 3 = NONE/off,
+            1 = DRIFT, 2 = RISE, 5 = LINGER, 0 = FLOAT, 4 = SLEEPWALKER)
+        * sub-field 2: remaining dimming/animation time in milliseconds
             (counts down to 0 when off)
-        * sub-field 3: configured total dimming duration in milliseconds
+        * sub-field 3: configured total animation duration in milliseconds
             (0 when off)
         * sub-field 4: paused indicator (0 = not paused, 1 = paused)
         * sub-field 5: always 0 in all real-device captures — not the charging indicator
@@ -179,10 +213,11 @@ class CasperGlow:
 
         self._state.raw_state = data
 
-        # Sub-field 1: power/mode indicator (1 = on, 3 = off)
+        # Sub-field 1: animation/power mode (NONE=3 is off; all other modes are on)
         sf1 = state_fields.get(1)
         if sf1 is not None and isinstance(sf1[0], int):
-            self._state.is_on = sf1[0] == 1
+            self._state.animation_type = AnimationType.from_raw(sf1[0])
+            self._state.is_on = sf1[0] != AnimationType.NONE
             if not self._state.is_on:
                 self._state.is_paused = False
 
@@ -268,6 +303,7 @@ class CasperGlow:
 
         await self._execute_command(ACTION_BODY_OFF)
         self._state.is_on = False
+        self._state.animation_type = AnimationType.NONE
         self._state.dimming_time_remaining_ms = 0
         self._fire_callbacks()
 
@@ -316,8 +352,155 @@ class CasperGlow:
         self._state.configured_dimming_time_minutes = dimming_time_minutes
         self._fire_callbacks()
 
+    async def sync_clock(self, *, now: datetime | None = None) -> None:
+        """Synchronise the light's real-time clock, UTC offset, and DST schedule."""
+        body = build_set_clock_body(now=now)
+        await self._execute_command(body)
+
+    async def set_rises(
+        self,
+        alarms: Sequence[RiseAlarm],
+        *,
+        now: datetime | None = None,
+        sync_clock: bool = True,
+    ) -> list[RiseAlarm]:
+        """Configure Multi-Rise wake-up alarms on the light.
+
+        Replaces the device's Rise schedule with ``alarms`` (up to 16 unrolled
+        weekday slots, chunked across up to two BLE packets). By default, also
+        sends a ``nova_set_clock`` packet in the same BLE session so the light's
+        clock is guaranteed to be set before scheduling alarms.
+
+        Returns the list of :class:`RiseAlarm` objects with assigned ``sync_id``
+        values.
+        """
+        assigned = assign_rise_sync_ids(alarms)
+        rise_bodies = build_rise_config_bodies(assigned, now=now)
+        bodies: list[bytes] = []
+        if sync_clock:
+            bodies.append(build_set_clock_body(now=now))
+        bodies.extend(rise_bodies)
+
+        await self._execute_commands(bodies)
+        self._state.rises = list(assigned)
+        self._fire_callbacks()
+        return list(assigned)
+
+    async def set_rise(
+        self,
+        hour: int,
+        minute: int,
+        *,
+        linger_minutes: int = 10,
+        weekdays: Iterable[Weekday | int] = (),
+        enabled: bool = True,
+        now: datetime | None = None,
+        sync_clock: bool = True,
+    ) -> RiseAlarm:
+        """Configure a single Rise wake-up alarm on the light.
+
+        Note that the Casper Glow starts its sunrise fade-in 30 minutes before
+        ``(hour, minute)``, reaches full brightness at ``(hour, minute)``, and
+        remains lit for ``linger_minutes`` (one of ``5, 10, 15, 30``).
+        """
+        normalized_days = tuple(Weekday(day) for day in weekdays)
+        alarm = RiseAlarm(
+            hour=hour,
+            minute=minute,
+            linger_minutes=linger_minutes,
+            enabled=enabled,
+            weekdays=normalized_days,
+        )
+        stored = await self.set_rises([alarm], now=now, sync_clock=sync_clock)
+        return stored[0]
+
+    async def clear_rises(self, *, include_legacy: bool = False) -> None:
+        """Clear all Rise wake-up alarms configured on the light."""
+        bodies = build_rise_config_bodies([])
+        if include_legacy:
+            bodies.append(build_delete_legacy_rise_body())
+        await self._execute_commands(bodies)
+        self._state.rises = []
+        self._fire_callbacks()
+
+    async def query_rises(self) -> list[RiseAlarm]:
+        """Query the light for its configured Multi-Rise wake-up alarms.
+
+        Connects, performs the handshake, sends ``nova_request_rise_config``,
+        buffers one or more ``nova_rise_config`` response packets until the
+        ``last_packet`` flag is seen, updates ``state.rises``, and returns the
+        decoded :class:`RiseAlarm` list.
+        """
+        async with self._ble_lock:
+            ready_event = asyncio.Event()
+            rise_event = asyncio.Event()
+            token: int | None = None
+            raw_entries: list[tuple[int, int]] = []
+
+            def _on_notify(_sender: Any, data: bytearray) -> None:
+                nonlocal token
+                raw = bytes(data)
+                _LOGGER.debug("Notification: %s", raw.hex())
+                self._parse_state_notification(raw)
+                parsed_rise = parse_rise_config_notification(raw)
+                if parsed_rise is not None:
+                    if parsed_rise.first_packet:
+                        raw_entries.clear()
+                    raw_entries.extend(parsed_rise.entries)
+                    if parsed_rise.last_packet:
+                        rise_event.set()
+                if payload_contains_ready_marker(raw):
+                    extracted = extract_token_from_notify(raw)
+                    if extracted is not None:
+                        token = extracted
+                        ready_event.set()
+
+            client = self._external_client or await establish_connection(
+                BleakClient, self._ble_device, self._ble_device.address
+            )
+            try:
+                if not client.is_connected:
+                    await client.connect()
+
+                await client.start_notify(READ_CHAR_UUID, _on_notify)
+                await client.write_gatt_char(WRITE_CHAR_UUID, RECONNECT_PACKET)
+
+                try:
+                    await asyncio.wait_for(ready_event.wait(), HANDSHAKE_TIMEOUT)
+                except TimeoutError as err:
+                    raise HandshakeTimeoutError(
+                        f"Device did not become ready within {HANDSHAKE_TIMEOUT}s"
+                    ) from err
+
+                if token is None:
+                    raise CommandError("Ready marker seen but no token extracted")
+
+                packet = build_action_packet(token, QUERY_RISE_CONFIG_BODY)
+                await client.write_gatt_char(WRITE_CHAR_UUID, packet)
+                _LOGGER.debug("Sent rise config query: %s", packet.hex())
+
+                try:
+                    await asyncio.wait_for(rise_event.wait(), RISE_RESPONSE_TIMEOUT)
+                except TimeoutError:
+                    _LOGGER.warning("Rise response timeout — returning cached rises")
+                    if self._state.rises is None:
+                        self._state.rises = []
+                else:
+                    self._state.rises = decode_rise_alarms(raw_entries)
+
+                self._fire_callbacks()
+            finally:
+                if self._external_client is None:
+                    await client.disconnect()
+
+            return list(self._state.rises)
+
     async def _execute_command(self, action_body: bytes) -> None:
-        """Connect, handshake, send command, disconnect."""
+        """Connect, handshake, send a single command, disconnect."""
+        await self._execute_commands([action_body])
+
+    async def _execute_commands(self, action_bodies: Sequence[bytes]) -> None:
+        """Connect, handshake, send one or more commands in sequence, disconnect."""
         async with self._ble_lock:
             ready_event = asyncio.Event()
             token: int | None = None
@@ -352,9 +535,10 @@ class CasperGlow:
                 if token is None:
                     raise CommandError("Ready marker seen but no token extracted")
 
-                packet = build_action_packet(token, action_body)
-                await client.write_gatt_char(WRITE_CHAR_UUID, packet)
-                _LOGGER.debug("Sent action packet: %s", packet.hex())
+                for action_body in action_bodies:
+                    packet = build_action_packet(token, action_body)
+                    await client.write_gatt_char(WRITE_CHAR_UUID, packet)
+                    _LOGGER.debug("Sent action packet: %s", packet.hex())
             finally:
                 if self._external_client is None:
                     await client.disconnect()

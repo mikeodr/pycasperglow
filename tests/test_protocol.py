@@ -1,14 +1,32 @@
 """Tests for protocol encoding/decoding functions."""
 
+from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from pycasperglow.const import ACTION_BODY_OFF, ACTION_BODY_ON
 from pycasperglow.protocol import (
+    NO_DST_TRANSITION,
+    RiseAlarm,
+    Weekday,
     build_action_packet,
     build_brightness_body,
+    build_delete_legacy_rise_body,
+    build_rise_config_bodies,
+    build_set_clock_body,
+    calculate_rise_time_utc,
+    decode_rise_alarms,
+    decode_rise_flags,
+    decode_zigzag32,
+    encode_fixed32,
+    encode_rise_flags,
     encode_varint,
+    encode_zigzag32,
     extract_token_from_notify,
     parse_protobuf_fields,
+    parse_rise_config_notification,
     parse_state_response,
     parse_varint,
     payload_contains_ready_marker,
@@ -445,3 +463,280 @@ class TestBuildBrightnessBody:
         assert 18 in fields
         inner = fields[18][0]
         assert isinstance(inner, bytes)
+
+
+class TestFixedAndZigZag:
+    """Tests for fixed32, fixed64, and sint32 ZigZag wire formats."""
+
+    @pytest.mark.parametrize(
+        ("signed_val", "expected_zigzag"),
+        [
+            (0, 0),
+            (-1, 1),
+            (1, 2),
+            (-2, 3),
+            (-28800, 57599),
+            (3600, 7200),
+            (2147483647, 0xFFFFFFFE),
+            (-2147483648, 0xFFFFFFFF),
+        ],
+    )
+    def test_zigzag_roundtrip(self, signed_val: int, expected_zigzag: int) -> None:
+        encoded = encode_zigzag32(signed_val)
+        assert encoded == expected_zigzag
+        assert decode_zigzag32(encoded) == signed_val
+
+    def test_zigzag_out_of_range_raises(self) -> None:
+        with pytest.raises(ValueError, match="signed 32-bit"):
+            encode_zigzag32(1 << 31)
+        with pytest.raises(ValueError, match="unsigned 32-bit"):
+            decode_zigzag32(-1)
+
+    def test_encode_fixed32(self) -> None:
+        assert encode_fixed32(0x12345678) == b"\x78\x56\x34\x12"
+        with pytest.raises(ValueError, match="fixed32"):
+            encode_fixed32(-1)
+
+    def test_parse_protobuf_fields_fixed32_and_fixed64(self) -> None:
+        # field 1 fixed32 (0x0d), field 2 fixed64 (0x11), field 3 varint (0x18)
+        payload = (
+            b"\x0d"
+            + encode_fixed32(1_700_000_002)
+            + b"\x11"
+            + (0x0102030405060708).to_bytes(8, "little")
+            + b"\x18\x07"
+        )
+        fields = parse_protobuf_fields(payload)
+        assert fields[1] == [1_700_000_002]
+        assert fields[2] == [0x0102030405060708]
+        assert fields[3] == [7]
+
+    def test_truncated_fixed_fields_and_token_skip(self) -> None:
+        # Truncated fixed32
+        assert parse_protobuf_fields(b"\x0d\x01\x02") == {}
+        # Truncated fixed64
+        assert parse_protobuf_fields(b"\x11\x01\x02\x03") == {}
+        # Token extraction skips preceding fixed32/fixed64 fields safely
+        payload = (
+            b"\x15"
+            + encode_fixed32(123)
+            + b"\x19"
+            + (456).to_bytes(8, "little")
+            + b"\x08\x2a"
+        )
+        assert extract_token_from_notify(payload) == 42
+        # Truncated length-delimited in extract_token_from_notify returns None
+        assert extract_token_from_notify(b"\x22\x0a\x01\x02") is None
+
+
+class TestRiseAlarmModel:
+    """Validation and normalisation tests for RiseAlarm."""
+
+    def test_normalises_weekdays(self) -> None:
+        alarm = RiseAlarm(
+            hour=7,
+            minute=30,
+            weekdays=(Weekday.FRIDAY, Weekday.MONDAY, Weekday.FRIDAY),
+        )
+        assert alarm.weekdays == (Weekday.MONDAY, Weekday.FRIDAY)
+        assert alarm.repeats_weekly is True
+
+    def test_one_off_alarm(self) -> None:
+        alarm = RiseAlarm(hour=6, minute=45)
+        assert alarm.weekdays == ()
+        assert alarm.repeats_weekly is False
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"hour": 24, "minute": 0},
+            {"hour": -1, "minute": 0},
+            {"hour": 7, "minute": 60},
+            {"hour": 7, "minute": 0, "linger_minutes": 7},
+            {"hour": 7, "minute": 0, "linger_minutes": 300},
+            {"hour": 7, "minute": 0, "sync_id": 70_000},
+        ],
+    )
+    def test_invalid_parameters_raise(self, kwargs: dict[str, Any]) -> None:
+        with pytest.raises(ValueError):
+            RiseAlarm(**kwargs)
+
+
+class TestBuildSetClockBody:
+    """Clock sync (nova_set_clock, field 21) encoding tests."""
+
+    def test_fixed_offset_timezone(self) -> None:
+        tz_minus_8 = timezone(timedelta(hours=-8))
+        now = datetime(2026, 1, 15, 10, 0, 0, tzinfo=tz_minus_8)
+        body = build_set_clock_body(now)
+
+        outer = parse_protobuf_fields(body)
+        assert 21 in outer
+        inner_bytes = outer[21][0]
+        assert isinstance(inner_bytes, bytes)
+        inner = parse_protobuf_fields(inner_bytes)
+
+        assert inner[1] == [int(now.timestamp())]
+        assert decode_zigzag32(int(inner[2][0])) == -28800
+        assert inner[3] == [NO_DST_TRANSITION]
+        assert decode_zigzag32(int(inner[4][0])) == 0
+
+    def test_zoneinfo_dst_spring_forward_and_fall_back(self) -> None:
+        la = ZoneInfo("America/Los_Angeles")
+        # Before 2026 US spring-forward (2026-03-08 02:00 PST -> 03:00 PDT = 10:00 UTC)
+        winter_now = datetime(2026, 2, 15, 12, 0, 0, tzinfo=la)
+        winter_body = build_set_clock_body(winter_now)
+        winter_raw = parse_protobuf_fields(winter_body)[21][0]
+        assert isinstance(winter_raw, bytes)
+        winter_inner = parse_protobuf_fields(winter_raw)
+        expected_spring_utc = int(
+            datetime(2026, 3, 8, 10, 0, 0, tzinfo=UTC).timestamp()
+        )
+        assert decode_zigzag32(int(winter_inner[2][0])) == -28800
+        assert winter_inner[3] == [expected_spring_utc]
+        assert decode_zigzag32(int(winter_inner[4][0])) == -25200
+
+        # Before 2026 US fall-back (2026-11-01 02:00 PDT -> 01:00 PST = 09:00 UTC)
+        autumn_now = datetime(2026, 10, 15, 12, 0, 0, tzinfo=la)
+        autumn_body = build_set_clock_body(autumn_now)
+        autumn_raw = parse_protobuf_fields(autumn_body)[21][0]
+        assert isinstance(autumn_raw, bytes)
+        autumn_inner = parse_protobuf_fields(autumn_raw)
+        expected_fall_utc = int(datetime(2026, 11, 1, 9, 0, 0, tzinfo=UTC).timestamp())
+        assert decode_zigzag32(int(autumn_inner[2][0])) == -25200
+        assert autumn_inner[3] == [expected_fall_utc]
+        assert decode_zigzag32(int(autumn_inner[4][0])) == -28800
+
+
+class TestRiseProtocol:
+    """Multi-Rise scheduling, chunking, and notification parsing tests."""
+
+    def test_rise_flags_roundtrip(self) -> None:
+        flags = encode_rise_flags(enabled=True, repeats_weekly=True, sync_id=0x1234)
+        assert flags == 0x12340007
+        assert decode_rise_flags(flags) == (True, True, True, 0x1234)
+
+        disabled_once = encode_rise_flags(
+            enabled=False, repeats_weekly=False, sync_id=5
+        )
+        assert decode_rise_flags(disabled_once) == (False, False, True, 5)
+
+    def test_calculate_rise_time_utc_one_off_rollover(self) -> None:
+        tz = timezone(timedelta(hours=-8))
+        # Local time: Friday 2026-11-13 10:00 PST
+        now = datetime(2026, 11, 13, 10, 0, 0, tzinfo=tz)
+
+        # Future time today (11:30, linger=15 -> +3s) stays on 2026-11-13
+        t_today = calculate_rise_time_utc(11, 30, 15, now=now)
+        expected_today = (
+            int(datetime(2026, 11, 13, 11, 30, 0, tzinfo=UTC).timestamp()) + 3
+        )
+        assert t_today == expected_today
+
+        # Past time today (07:30, linger=10 -> +2s) rolls over to tomorrow 2026-11-14
+        t_tomorrow = calculate_rise_time_utc(7, 30, 10, now=now)
+        expected_tomorrow = (
+            int(datetime(2026, 11, 14, 7, 30, 0, tzinfo=UTC).timestamp()) + 2
+        )
+        assert t_tomorrow == expected_tomorrow
+
+    def test_calculate_rise_time_utc_repeating_weekday_rollover(self) -> None:
+        tz = timezone(timedelta(hours=-5))
+        # Wednesday 2026-11-11 09:00 local
+        now = datetime(2026, 11, 11, 9, 0, 0, tzinfo=tz)
+
+        # Friday (same week: 2026-11-13)
+        t_fri = calculate_rise_time_utc(7, 0, 5, now=now, weekday=Weekday.FRIDAY)
+        assert t_fri == int(datetime(2026, 11, 13, 7, 0, 0, tzinfo=UTC).timestamp()) + 1
+
+        # Monday (already passed this week -> next Monday 2026-11-16)
+        t_mon = calculate_rise_time_utc(7, 0, 5, now=now, weekday=Weekday.MONDAY)
+        assert t_mon == int(datetime(2026, 11, 16, 7, 0, 0, tzinfo=UTC).timestamp()) + 1
+
+        # Wednesday 08:00 (same day, already passed -> next Wednesday 2026-11-18)
+        t_wed = calculate_rise_time_utc(8, 0, 30, now=now, weekday=Weekday.WEDNESDAY)
+        assert t_wed == int(datetime(2026, 11, 18, 8, 0, 0, tzinfo=UTC).timestamp()) + 6
+
+    def test_empty_rise_config_clears_alarms(self) -> None:
+        bodies = build_rise_config_bodies([])
+        assert bodies == [bytes.fromhex("c2010408001003")]
+
+    def test_multi_packet_chunking_and_roundtrip(self) -> None:
+        now = datetime(2026, 11, 13, 10, 0, 0, tzinfo=UTC)
+        alarm1 = RiseAlarm(
+            hour=7,
+            minute=15,
+            linger_minutes=10,
+            enabled=True,
+            weekdays=tuple(Weekday),  # 7 slots
+        )
+        alarm2 = RiseAlarm(
+            hour=8,
+            minute=45,
+            linger_minutes=30,
+            enabled=False,
+            weekdays=tuple(Weekday),  # 7 slots -> 14 total slots -> 2 packets (8 + 6)
+        )
+
+        bodies = build_rise_config_bodies([alarm1, alarm2], now=now)
+        assert len(bodies) == 2
+
+        # Every full BLE packet must fit comfortably inside the 161-byte MTU
+        packets = [build_action_packet(42, b) for b in bodies]
+        assert all(len(p) <= 161 for p in packets)
+
+        parsed0 = parse_rise_config_notification(packets[0])
+        parsed1 = parse_rise_config_notification(packets[1])
+        assert parsed0 is not None
+        assert parsed1 is not None
+
+        assert parsed0.start == 0
+        assert parsed0.first_packet is True
+        assert parsed0.last_packet is False
+        assert len(parsed0.entries) == 8
+
+        assert parsed1.start == 8
+        assert parsed1.first_packet is False
+        assert parsed1.last_packet is True
+        assert len(parsed1.entries) == 6
+
+        decoded = decode_rise_alarms([*parsed0.entries, *parsed1.entries])
+        assert decoded == [
+            RiseAlarm(
+                hour=7,
+                minute=15,
+                linger_minutes=10,
+                enabled=True,
+                weekdays=tuple(Weekday),
+                sync_id=1,
+            ),
+            RiseAlarm(
+                hour=8,
+                minute=45,
+                linger_minutes=30,
+                enabled=False,
+                weekdays=tuple(Weekday),
+                sync_id=2,
+            ),
+        ]
+
+    def test_exceeding_max_slots_raises(self) -> None:
+        # 3 daily alarms = 21 slots > 16 limit
+        alarms = [
+            RiseAlarm(hour=6, minute=0, weekdays=tuple(Weekday)),
+            RiseAlarm(hour=7, minute=0, weekdays=tuple(Weekday)),
+            RiseAlarm(hour=8, minute=0, weekdays=tuple(Weekday)),
+        ]
+        with pytest.raises(ValueError, match="exceeds device maximum"):
+            build_rise_config_bodies(alarms)
+
+    def test_unsupported_ui_linger_raises(self) -> None:
+        with pytest.raises(ValueError, match="Invalid linger_minutes"):
+            build_rise_config_bodies([RiseAlarm(hour=7, minute=0, linger_minutes=20)])
+
+    def test_delete_legacy_rise_body(self) -> None:
+        assert build_delete_legacy_rise_body() == bytes.fromhex("a2010620ffffffff0f")
+
+    def test_parse_rise_config_notification_non_matching(self) -> None:
+        assert parse_rise_config_notification(b"\x08\x2a") is None
+        assert parse_rise_config_notification(b"\x08\x2a\x22\x02\x08\x01") is None

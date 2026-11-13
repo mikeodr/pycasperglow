@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,16 +13,22 @@ from pycasperglow.const import (
     ACTION_BODY_ON,
     ACTION_BODY_PAUSE,
     ACTION_BODY_RESUME,
+    QUERY_RISE_CONFIG_BODY,
     QUERY_STATE_BODY,
     READ_CHAR_UUID,
     RECONNECT_PACKET,
     WRITE_CHAR_UUID,
 )
-from pycasperglow.device import BatteryLevel, CasperGlow
+from pycasperglow.device import AnimationType, BatteryLevel, CasperGlow
 from pycasperglow.exceptions import HandshakeTimeoutError
 from pycasperglow.protocol import (
+    RiseAlarm,
+    Weekday,
     build_action_packet,
     build_brightness_body,
+    build_delete_legacy_rise_body,
+    build_rise_config_bodies,
+    build_set_clock_body,
     encode_varint,
 )
 
@@ -547,3 +554,199 @@ class TestCasperGlow:
 
         assert result is True
         assert glow.state.is_charging is expected
+
+    @pytest.mark.parametrize(
+        ("raw_anim", "expected_anim", "expected_on"),
+        [
+            (0, AnimationType.FLOAT, True),
+            (1, AnimationType.DRIFT, True),
+            (2, AnimationType.RISE, True),
+            (3, AnimationType.NONE, False),
+            (4, AnimationType.SLEEPWALKER, True),
+            (5, AnimationType.LINGER, True),
+            (99, None, True),
+        ],
+    )
+    async def test_parse_state_animation_types(
+        self,
+        raw_anim: int,
+        expected_anim: AnimationType | None,
+        expected_on: bool,
+    ) -> None:
+        """RISE (2), LINGER (5), FLOAT (0), SLEEPWALKER (4) all report is_on=True."""
+        from pycasperglow.protocol import STATE_RESPONSE_FIELD
+
+        device = _make_ble_device()
+        glow = CasperGlow(device)
+
+        state_inner = b"\x08" + encode_varint(raw_anim)
+        tag_19 = (STATE_RESPONSE_FIELD << 3) | 2
+        field4 = encode_varint(tag_19) + encode_varint(len(state_inner)) + state_inner
+        notif = b"\x08\x2a\x22" + encode_varint(len(field4)) + field4
+
+        assert glow._parse_state_notification(notif) is True
+        assert glow.state.animation_type is expected_anim
+        assert glow.state.is_on is expected_on
+
+    async def test_sync_clock_writes_expected_packet(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client(ready_token=42)
+        glow = CasperGlow(device, client=client)
+        fixed_now = datetime(
+            2026, 11, 13, 10, 0, 0, tzinfo=timezone(timedelta(hours=-8))
+        )
+
+        await glow.sync_clock(now=fixed_now)
+
+        calls = client.write_gatt_char.call_args_list
+        assert len(calls) == 2
+        assert calls[0].args == (WRITE_CHAR_UUID, RECONNECT_PACKET)
+        expected_packet = build_action_packet(42, build_set_clock_body(fixed_now))
+        assert calls[1].args == (WRITE_CHAR_UUID, expected_packet)
+
+    async def test_set_rise_syncs_clock_and_sends_rise_config(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client(ready_token=42)
+        glow = CasperGlow(device, client=client)
+        states: list[Any] = []
+        glow.register_callback(lambda s: states.append(s))
+        fixed_now = datetime(2026, 11, 13, 10, 0, 0, tzinfo=UTC)
+
+        stored = await glow.set_rise(
+            7,
+            30,
+            linger_minutes=15,
+            weekdays=[Weekday.MONDAY, Weekday.WEDNESDAY, Weekday.FRIDAY],
+            now=fixed_now,
+        )
+
+        assert stored == RiseAlarm(
+            hour=7,
+            minute=30,
+            linger_minutes=15,
+            enabled=True,
+            weekdays=(Weekday.MONDAY, Weekday.WEDNESDAY, Weekday.FRIDAY),
+            sync_id=1,
+        )
+        assert glow.state.rises == [stored]
+        assert len(states) == 1
+
+        calls = client.write_gatt_char.call_args_list
+        # Reconnect + clock sync + 1 rise_config packet
+        assert len(calls) == 3
+        assert calls[0].args == (WRITE_CHAR_UUID, RECONNECT_PACKET)
+        assert calls[1].args == (
+            WRITE_CHAR_UUID,
+            build_action_packet(42, build_set_clock_body(fixed_now)),
+        )
+        expected_rise_bodies = build_rise_config_bodies([stored], now=fixed_now)
+        assert len(expected_rise_bodies) == 1
+        assert calls[2].args == (
+            WRITE_CHAR_UUID,
+            build_action_packet(42, expected_rise_bodies[0]),
+        )
+
+    async def test_set_rises_multi_packet_without_clock_sync(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client(ready_token=42)
+        glow = CasperGlow(device, client=client)
+        fixed_now = datetime(2026, 11, 13, 10, 0, 0, tzinfo=UTC)
+
+        alarms = [
+            RiseAlarm(hour=6, minute=30, weekdays=tuple(Weekday)),
+            RiseAlarm(hour=8, minute=0, weekdays=tuple(Weekday)),
+        ]
+        stored = await glow.set_rises(alarms, now=fixed_now, sync_clock=False)
+        assert len(stored) == 2
+
+        calls = client.write_gatt_char.call_args_list
+        # Reconnect + 2 chunked rise_config packets
+        assert len(calls) == 3
+        expected_bodies = build_rise_config_bodies(stored, now=fixed_now)
+        assert len(expected_bodies) == 2
+        assert calls[1].args == (
+            WRITE_CHAR_UUID,
+            build_action_packet(42, expected_bodies[0]),
+        )
+        assert calls[2].args == (
+            WRITE_CHAR_UUID,
+            build_action_packet(42, expected_bodies[1]),
+        )
+
+    async def test_clear_rises_with_and_without_legacy(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client(ready_token=42)
+        glow = CasperGlow(device, client=client)
+        glow._state.rises = [RiseAlarm(hour=7, minute=0, sync_id=1)]
+
+        await glow.clear_rises(include_legacy=True)
+
+        assert glow.state.rises == []
+        calls = client.write_gatt_char.call_args_list
+        assert len(calls) == 3
+        assert calls[1].args == (
+            WRITE_CHAR_UUID,
+            build_action_packet(42, bytes.fromhex("c2010408001003")),
+        )
+        assert calls[2].args == (
+            WRITE_CHAR_UUID,
+            build_action_packet(42, build_delete_legacy_rise_body()),
+        )
+
+    async def test_query_rises_buffers_multi_packet_notifications(self) -> None:
+        device = _make_ble_device()
+        fixed_now = datetime(2026, 11, 13, 10, 0, 0, tzinfo=UTC)
+        expected_alarms = [
+            RiseAlarm(
+                hour=7, minute=0, linger_minutes=10, weekdays=tuple(Weekday), sync_id=1
+            ),
+            RiseAlarm(
+                hour=9, minute=15, linger_minutes=30, weekdays=tuple(Weekday), sync_id=2
+            ),
+        ]
+        rise_bodies = build_rise_config_bodies(expected_alarms, now=fixed_now)
+        assert len(rise_bodies) == 2
+
+        client = AsyncMock()
+        client.is_connected = True
+
+        async def _start_notify(_char_uuid: str, callback: Any) -> None:
+            client._notify_callback = callback
+
+        async def _write_gatt_char(_char_uuid: str, data: bytes) -> None:
+            if data == RECONNECT_PACKET:
+                client._notify_callback(None, _make_ready_notification(42))
+            elif data == build_action_packet(42, QUERY_RISE_CONFIG_BODY):
+                for body in rise_bodies:
+                    notif = bytearray(
+                        b"\x08"
+                        + encode_varint(42)
+                        + b"\x10\x01\x22"
+                        + encode_varint(len(body))
+                        + body
+                    )
+                    client._notify_callback(None, notif)
+
+        client.start_notify = AsyncMock(side_effect=_start_notify)
+        client.write_gatt_char = AsyncMock(side_effect=_write_gatt_char)
+
+        glow = CasperGlow(device, client=client)
+        states: list[Any] = []
+        glow.register_callback(lambda s: states.append(s))
+
+        alarms = await glow.query_rises()
+
+        assert alarms == expected_alarms
+        assert glow.state.rises == expected_alarms
+        assert len(states) == 1
+
+    async def test_query_rises_timeout_returns_empty(self) -> None:
+        device = _make_ble_device()
+        client = _make_mock_client(ready_token=42)
+        glow = CasperGlow(device, client=client)
+
+        with patch("pycasperglow.device.RISE_RESPONSE_TIMEOUT", 0.05):
+            alarms = await glow.query_rises()
+
+        assert alarms == []
+        assert glow.state.rises == []

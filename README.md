@@ -70,6 +70,11 @@ Async client for a single Casper Glow light.
 | `pause()` | Pause the active dimming sequence |
 | `resume()` | Resume a paused dimming sequence |
 | `set_brightness_and_dimming_time(level, dimming_time_minutes)` | Set brightness (60–100 %) and dimming duration (15, 30, 45, 60, or 90 min). Both required. |
+| `set_rise(hour, minute, *, linger_minutes=10, weekdays=(), enabled=True)` | Schedule a single wake-up ("Rise") alarm (30-min sunrise fade-in peaking at `hour:minute`, holding for `linger_minutes` ∈ `{5, 10, 15, 30}`) |
+| `set_rises(alarms, *, sync_clock=True)` | Replace all Multi-Rise alarms on the light (up to 16 unrolled weekday slots) |
+| `query_rises()` | Query configured Multi-Rise alarms from the light; returns `list[RiseAlarm]` |
+| `clear_rises()` | Clear all Rise wake-up alarms from the light |
+| `sync_clock()` | Sync the light's real-time clock, local UTC offset, and upcoming DST transition |
 | `query_state()` | Query current device state; returns `GlowState` |
 | `handshake()` | Test connectivity without sending a command |
 | `register_callback(cb)` | Register a callback invoked on every state update |
@@ -84,12 +89,14 @@ Dataclass returned by `query_state()` and passed to registered callbacks.
 | Field | Type | Description |
 |-------|------|-------------|
 | `is_on` | `bool \| None` | `True` when on, `False` when off |
+| `animation_type` | `AnimationType \| None` | Active light mode (`DRIFT`, `RISE`, `LINGER`, `FLOAT`, `SLEEPWALKER`, or `NONE`) |
 | `is_paused` | `bool \| None` | `True` when dimming is paused |
 | `is_charging` | `bool \| None` | `True` when plugged in to charger |
 | `battery_level` | `BatteryLevel \| None` | Discrete battery level |
 | `brightness_level` | `int \| None` | Last-set brightness % (not reported by device) |
 | `dimming_time_minutes` | `int \| None` | Remaining dimming time (from device) |
 | `configured_dimming_time_minutes` | `int \| None` | Total configured duration |
+| `rises` | `list[RiseAlarm] \| None` | Last-queried or last-set Rise wake-up alarms |
 
 ### `BatteryLevel`
 
@@ -119,6 +126,15 @@ See the [`examples/`](examples/) directory for runnable scripts. To discover nea
 
 ```bash
 python examples/discover_and_turn_on.py
+```
+
+To inspect, schedule, test, or clear Rise wake-up alarms:
+
+```bash
+python examples/rise.py list
+python examples/rise.py set 07:30 --days weekdays --linger 10
+python examples/rise.py test
+python examples/rise.py clear
 ```
 
 ## Development
