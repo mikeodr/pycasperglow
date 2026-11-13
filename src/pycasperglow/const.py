@@ -23,8 +23,18 @@ ACTION_BODY_RESUME = bytes.fromhex("1a020806")
 # State query — asks the device to report its current state
 QUERY_STATE_BODY = bytes.fromhex("52020803")
 
+# Rise (wake-up alarm) query — asks the device to report its rise_config packet(s)
+QUERY_RISE_CONFIG_BODY = bytes.fromhex("ca0100")
+
 # Valid dimming times the iOS app allows (in minutes)
 DIMMING_TIME_MINUTES: tuple[int, ...] = (15, 30, 45, 60, 90)
+
+# Valid linger durations at peak Rise brightness (in minutes)
+RISE_LINGER_MINUTES: tuple[int, ...] = (5, 10, 15, 30)
+
+# Firmware limits for Multi-Rise configuration
+MAX_RISE_SLOTS = 16
+MAX_RISES_PER_PACKET = 8
 
 # Brightness levels the iOS app uses (percentages)
 # Level 1 (dimmest) = 60%, Level 5 (brightest) = 100%
@@ -32,3 +42,4 @@ BRIGHTNESS_LEVELS: tuple[int, ...] = (60, 70, 80, 90, 100)
 
 HANDSHAKE_TIMEOUT = 10.0
 STATE_RESPONSE_TIMEOUT = 5.0
+RISE_RESPONSE_TIMEOUT = 5.0
