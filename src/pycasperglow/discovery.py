@@ -15,17 +15,15 @@ from .const import DEVICE_NAME_PREFIX, MANUFACTURER_ID
 def is_casper_glow(device: BLEDevice, adv: AdvertisementData) -> bool:
     """Return True if the device appears to be a Casper Glow.
 
-    Casper Glow lights do not advertise a service UUID.  Detection relies
-    on the local name prefix ("Jar") and, as a secondary signal, the
-    manufacturer-specific data company ID (0xFFFF).
+    Casper Glow lights do not advertise a service UUID.  Detection requires
+    both the local name prefix ("Jar") and manufacturer-specific data with
+    company ID 0xFFFF.  The name prefix alone is too broad and matches
+    unrelated devices.
     """
     name = adv.local_name or device.name or ""
-    if name.startswith(DEVICE_NAME_PREFIX):
-        return True
-    # Fallback: manufacturer data with the known company ID + name present
-    if MANUFACTURER_ID in adv.manufacturer_data and name:
-        return name.startswith(DEVICE_NAME_PREFIX)
-    return False
+    return name.startswith(DEVICE_NAME_PREFIX) and (
+        MANUFACTURER_ID in adv.manufacturer_data
+    )
 
 
 async def discover_glows(timeout: float = 10.0) -> AsyncIterator[BLEDevice]:

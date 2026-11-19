@@ -7,7 +7,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pycasperglow.const import MANUFACTURER_ID
 from pycasperglow.discovery import is_casper_glow
+
+GLOW_MANUFACTURER_DATA = {MANUFACTURER_ID: b"\x00"}
 
 
 def _make_device(name: str | None = None) -> Any:
@@ -44,7 +47,7 @@ class TestIsCasperGlow:
         local_name: str | None,
     ) -> None:
         device = _make_device(name=device_name)
-        adv = _make_adv(local_name=local_name)
+        adv = _make_adv(local_name=local_name, manufacturer_data=GLOW_MANUFACTURER_DATA)
         assert is_casper_glow(device, adv)
 
     @pytest.mark.parametrize(
@@ -62,5 +65,17 @@ class TestIsCasperGlow:
         local_name: str | None,
     ) -> None:
         device = _make_device(name=device_name)
-        adv = _make_adv(local_name=local_name)
+        adv = _make_adv(local_name=local_name, manufacturer_data=GLOW_MANUFACTURER_DATA)
+        assert not is_casper_glow(device, adv)
+
+    @pytest.mark.parametrize(
+        "manufacturer_data",
+        [{}, {0x004C: b"\x00"}],
+        ids=["no_manufacturer_data", "other_manufacturer"],
+    )
+    def test_name_without_manufacturer_id_no_match(
+        self, manufacturer_data: dict[int, bytes]
+    ) -> None:
+        device = _make_device(name="Jar")
+        adv = _make_adv(local_name="Jar", manufacturer_data=manufacturer_data)
         assert not is_casper_glow(device, adv)

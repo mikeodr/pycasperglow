@@ -71,7 +71,7 @@ Async client for a single Casper Glow light.
 | `resume()` | Resume a paused dimming sequence |
 | `set_brightness_and_dimming_time(level, dimming_time_minutes)` | Set brightness (60–100 %) and dimming duration (15, 30, 45, 60, or 90 min). Both required. |
 | `query_state()` | Query current device state; returns `GlowState` |
-| `handshake()` | Test connectivity without sending a command |
+| `handshake(*, max_attempts=4)` | Test connectivity without sending a command. Raises `ConnectionError` (or `HandshakeTimeoutError`) on failure; pass `max_attempts=1` when probing unconfirmed devices |
 | `register_callback(cb)` | Register a callback invoked on every state update |
 | `state` | Current `GlowState` property (last known, or default) |
 | `name` | Device name (property) |
@@ -102,7 +102,7 @@ Scan for Casper Glow devices. Async generator that yields `BLEDevice` objects as
 
 ### `is_casper_glow(device, adv)`
 
-Returns `True` if a `BLEDevice` and `AdvertisementData` match a Casper Glow (by service UUID or name prefix).
+Returns `True` if a `BLEDevice` and `AdvertisementData` match a Casper Glow: the local name starts with `"Jar"` and the advertisement includes manufacturer data with company ID `0xFFFF`.
 
 ### Exceptions
 

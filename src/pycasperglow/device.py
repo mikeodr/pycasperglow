@@ -5,13 +5,18 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
-from bleak_retry_connector import establish_connection
+from bleak_retry_connector import (
+    BLEAK_RETRY_EXCEPTIONS,
+    MAX_CONNECT_ATTEMPTS,
+    establish_connection,
+)
 
 from .const import (
     HANDSHAKE_TIMEOUT,
@@ -21,7 +26,7 @@ from .const import (
     STATE_RESPONSE_TIMEOUT,
     WRITE_CHAR_UUID,
 )
-from .exceptions import CommandError, HandshakeTimeoutError
+from .exceptions import CommandError, ConnectionError, HandshakeTimeoutError
 from .protocol import (
     build_action_packet,
     build_brightness_body,
@@ -227,8 +232,94 @@ class CasperGlow:
         _LOGGER.debug("Parsed state from notification: %s", self._state)
         return True
 
-    async def handshake(self) -> None:
+    @asynccontextmanager
+    async def _connect(
+        self,
+        on_notify: Callable[[Any, bytearray], None],
+        ready_event: asyncio.Event,
+        *,
+        max_attempts: int = MAX_CONNECT_ATTEMPTS,
+    ) -> AsyncIterator[BleakClient]:
+        """Connect, subscribe, send the reconnect packet and wait for ready.
+
+        Holds ``_ble_lock`` for the whole session.  Uses the external client
+        when one was supplied (never disconnecting it, but unsubscribing from
+        notifications on exit); otherwise opens a fresh connection and always
+        disconnects it on exit.  BLE failures during setup are raised as
+        ``ConnectionError``; a missing ready marker as
+        ``HandshakeTimeoutError``.  *on_notify* must set *ready_event*.
+        """
+        address = self._ble_device.address
+        async with self._ble_lock:
+            client = self._external_client
+            subscribed = False
+            try:
+                try:
+                    if client is None:
+                        client = await establish_connection(
+                            BleakClient,
+                            self._ble_device,
+                            address,
+                            max_attempts=max_attempts,
+                        )
+                    if not client.is_connected:
+                        await client.connect()
+                    await client.start_notify(READ_CHAR_UUID, on_notify)
+                    subscribed = True
+                    await client.write_gatt_char(WRITE_CHAR_UUID, RECONNECT_PACKET)
+                except BLEAK_RETRY_EXCEPTIONS as err:
+                    raise ConnectionError(
+                        f"Failed to connect to {address}: {err}"
+                    ) from err
+
+                try:
+                    await asyncio.wait_for(ready_event.wait(), HANDSHAKE_TIMEOUT)
+                except TimeoutError as err:
+                    raise HandshakeTimeoutError(
+                        f"Device did not become ready within {HANDSHAKE_TIMEOUT}s"
+                    ) from err
+
+                yield client
+            finally:
+                # Never let a failed cleanup mask the real error.
+                if client is not None and self._external_client is None:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        _LOGGER.debug(
+                            "Error disconnecting from %s", address, exc_info=True
+                        )
+                elif client is not None and subscribed:
+                    # The external client outlives this session; drop our
+                    # handler so the next session can subscribe again.
+                    try:
+                        await client.stop_notify(READ_CHAR_UUID)
+                    except Exception:
+                        _LOGGER.debug(
+                            "Error unsubscribing from %s", address, exc_info=True
+                        )
+
+    async def _send_action(
+        self, client: BleakClient, token: int | None, action_body: bytes
+    ) -> None:
+        """Build and write an action packet; raise CommandError on failure."""
+        if token is None:
+            raise CommandError("Ready marker seen but no token extracted")
+        packet = build_action_packet(token, action_body)
+        try:
+            await client.write_gatt_char(WRITE_CHAR_UUID, packet)
+        except BLEAK_RETRY_EXCEPTIONS as err:
+            raise CommandError(
+                f"Failed to send command to {self._ble_device.address}: {err}"
+            ) from err
+        _LOGGER.debug("Sent action packet: %s", packet.hex())
+
+    async def handshake(self, *, max_attempts: int = MAX_CONNECT_ATTEMPTS) -> None:
         """Test connectivity by performing the handshake without sending a command.
+
+        *max_attempts* is passed to ``establish_connection``.  Callers probing a
+        device that may not be a Casper Glow (e.g. during discovery) should use
+        ``max_attempts=1`` to avoid holding connection slots on repeated retries.
 
         Raises HandshakeTimeoutError or ConnectionError on failure.
         """
@@ -238,21 +329,8 @@ class CasperGlow:
             if payload_contains_ready_marker(bytes(data)):
                 ready_event.set()
 
-        client = await establish_connection(
-            BleakClient, self._ble_device, self._ble_device.address
-        )
-        try:
-            await client.start_notify(READ_CHAR_UUID, _on_notify)
-            await client.write_gatt_char(WRITE_CHAR_UUID, RECONNECT_PACKET)
-
-            try:
-                await asyncio.wait_for(ready_event.wait(), HANDSHAKE_TIMEOUT)
-            except TimeoutError as err:
-                raise HandshakeTimeoutError(
-                    f"Device did not become ready within {HANDSHAKE_TIMEOUT}s"
-                ) from err
-        finally:
-            await client.disconnect()
+        async with self._connect(_on_notify, ready_event, max_attempts=max_attempts):
+            pass
 
     async def turn_on(self) -> None:
         """Turn the light on."""
@@ -316,48 +394,36 @@ class CasperGlow:
         self._state.configured_dimming_time_minutes = dimming_time_minutes
         self._fire_callbacks()
 
+    def _make_notify_handler(
+        self, ready_event: asyncio.Event, state_event: asyncio.Event | None = None
+    ) -> tuple[Callable[[Any, bytearray], None], Callable[[], int | None]]:
+        """Return a notification handler and a getter for the extracted token.
+
+        The handler parses state notifications (setting *state_event* when one
+        is parsed) and sets *ready_event* once a session token is extracted.
+        """
+        token: int | None = None
+
+        def _on_notify(_sender: Any, data: bytearray) -> None:
+            nonlocal token
+            payload = bytes(data)
+            _LOGGER.debug("Notification: %s", payload.hex())
+            if self._parse_state_notification(payload) and state_event is not None:
+                state_event.set()
+            if payload_contains_ready_marker(payload):
+                extracted = extract_token_from_notify(payload)
+                if extracted is not None:
+                    token = extracted
+                    ready_event.set()
+
+        return _on_notify, lambda: token
+
     async def _execute_command(self, action_body: bytes) -> None:
         """Connect, handshake, send command, disconnect."""
-        async with self._ble_lock:
-            ready_event = asyncio.Event()
-            token: int | None = None
-
-            def _on_notify(_sender: Any, data: bytearray) -> None:
-                nonlocal token
-                _LOGGER.debug("Notification: %s", data.hex())
-                self._parse_state_notification(bytes(data))
-                if payload_contains_ready_marker(bytes(data)):
-                    extracted = extract_token_from_notify(bytes(data))
-                    if extracted is not None:
-                        token = extracted
-                        ready_event.set()
-
-            client = self._external_client or await establish_connection(
-                BleakClient, self._ble_device, self._ble_device.address
-            )
-            try:
-                if not client.is_connected:
-                    await client.connect()
-
-                await client.start_notify(READ_CHAR_UUID, _on_notify)
-                await client.write_gatt_char(WRITE_CHAR_UUID, RECONNECT_PACKET)
-
-                try:
-                    await asyncio.wait_for(ready_event.wait(), HANDSHAKE_TIMEOUT)
-                except TimeoutError as err:
-                    raise HandshakeTimeoutError(
-                        f"Device did not become ready within {HANDSHAKE_TIMEOUT}s"
-                    ) from err
-
-                if token is None:
-                    raise CommandError("Ready marker seen but no token extracted")
-
-                packet = build_action_packet(token, action_body)
-                await client.write_gatt_char(WRITE_CHAR_UUID, packet)
-                _LOGGER.debug("Sent action packet: %s", packet.hex())
-            finally:
-                if self._external_client is None:
-                    await client.disconnect()
+        ready_event = asyncio.Event()
+        on_notify, get_token = self._make_notify_handler(ready_event)
+        async with self._connect(on_notify, ready_event) as client:
+            await self._send_action(client, get_token(), action_body)
 
     async def query_state(self) -> GlowState:
         """Query the device for its current state.
@@ -366,54 +432,15 @@ class CasperGlow:
         waits for the state response notification, and returns the
         updated GlowState.
         """
-        async with self._ble_lock:
-            ready_event = asyncio.Event()
-            state_event = asyncio.Event()
-            token: int | None = None
-
-            def _on_notify(_sender: Any, data: bytearray) -> None:
-                nonlocal token
-                _LOGGER.debug("Notification: %s", data.hex())
-                if self._parse_state_notification(bytes(data)):
-                    state_event.set()
-                if payload_contains_ready_marker(bytes(data)):
-                    extracted = extract_token_from_notify(bytes(data))
-                    if extracted is not None:
-                        token = extracted
-                        ready_event.set()
-
-            client = self._external_client or await establish_connection(
-                BleakClient, self._ble_device, self._ble_device.address
-            )
+        ready_event = asyncio.Event()
+        state_event = asyncio.Event()
+        on_notify, get_token = self._make_notify_handler(ready_event, state_event)
+        async with self._connect(on_notify, ready_event) as client:
+            await self._send_action(client, get_token(), QUERY_STATE_BODY)
             try:
-                if not client.is_connected:
-                    await client.connect()
+                await asyncio.wait_for(state_event.wait(), STATE_RESPONSE_TIMEOUT)
+            except TimeoutError:
+                _LOGGER.warning("State response timeout — returning cached state")
+            self._fire_callbacks()
 
-                await client.start_notify(READ_CHAR_UUID, _on_notify)
-                await client.write_gatt_char(WRITE_CHAR_UUID, RECONNECT_PACKET)
-
-                try:
-                    await asyncio.wait_for(ready_event.wait(), HANDSHAKE_TIMEOUT)
-                except TimeoutError as err:
-                    raise HandshakeTimeoutError(
-                        f"Device did not become ready within {HANDSHAKE_TIMEOUT}s"
-                    ) from err
-
-                if token is None:
-                    raise CommandError("Ready marker seen but no token extracted")
-
-                packet = build_action_packet(token, QUERY_STATE_BODY)
-                await client.write_gatt_char(WRITE_CHAR_UUID, packet)
-                _LOGGER.debug("Sent state query: %s", packet.hex())
-
-                try:
-                    await asyncio.wait_for(state_event.wait(), STATE_RESPONSE_TIMEOUT)
-                except TimeoutError:
-                    _LOGGER.warning("State response timeout — returning cached state")
-
-                self._fire_callbacks()
-            finally:
-                if self._external_client is None:
-                    await client.disconnect()
-
-            return self._state
+        return self._state
