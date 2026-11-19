@@ -1,0 +1,4 @@
+# setuptools-scm includes all git-tracked files in the sdist; drop repo tooling.
+prune .github
+prune hooks
+exclude .gitignore CLAUDE.md

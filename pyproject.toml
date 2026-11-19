@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pycasperglow"
-version = "1.2.0"
+dynamic = ["version"]
 authors = [
     { name = "Mike O'Driscoll" },
 ]
@@ -47,6 +47,9 @@ Changelog = "https://github.com/mikeodr/pycasperglow/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools_scm]
+# Version is derived from the latest git tag (vX.Y.Z).
 
 [tool.setuptools.package-data]
 pycasperglow = ["py.typed"]
