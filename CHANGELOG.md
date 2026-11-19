@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-11-18
+
+### Changed
+
+- `is_casper_glow()` now requires manufacturer data with company ID `0xFFFF` (`MANUFACTURER_ID`) in addition to the `"Jar"` local name prefix. The name prefix alone matched unrelated devices. Previously the manufacturer ID check was a no-op.
+
+### Added
+
+- `handshake()` accepts an optional keyword-only `max_attempts` argument, forwarded to `establish_connection`. Use `max_attempts=1` when probing a device that may not be a Casper Glow (e.g. during discovery) so failed probes don't hold connection slots through retries.
+
+### Fixed
+
+- All device operations (`turn_on()`, `turn_off()`, `pause()`, `resume()`, `set_brightness_and_dimming_time()`, `query_state()` and `handshake()`) now raise `ConnectionError` (chained from the original exception) when the BLE connection or GATT setup fails, as documented. Previously `BleakError` subclasses from `bleak-retry-connector` (e.g. `BleakConnectionError`, `BleakNotFoundError`) and transport errors (`EOFError`, `BrokenPipeError`, `TimeoutError`) escaped unwrapped. The same errors while writing the command packet are raised as `CommandError`. **Callers that caught `BleakError` to detect an unreachable device must catch `CasperGlowError` instead.**
+- When an external `BleakClient` is used, each session now calls `stop_notify()` on exit so the next session does not subscribe twice.
+- An error raised while disconnecting no longer replaces the original exception; it is logged at debug level instead.
+- `handshake()` now holds the per-device BLE lock, so it no longer opens a second concurrent connection while a command is in progress, and it uses the external `BleakClient` when one was passed to `CasperGlow` (without disconnecting it) instead of opening its own connection.
+
 ## [1.2.0] - 2026-03-21
 
 ### Changed
