@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bleak.exc import BleakCharacteristicNotFoundError, BleakError
 
 from pycasperglow.const import (
     ACTION_BODY_OFF,
@@ -18,7 +20,11 @@ from pycasperglow.const import (
     WRITE_CHAR_UUID,
 )
 from pycasperglow.device import BatteryLevel, CasperGlow
-from pycasperglow.exceptions import HandshakeTimeoutError
+from pycasperglow.exceptions import (
+    CommandError,
+    ConnectionError,
+    HandshakeTimeoutError,
+)
 from pycasperglow.protocol import (
     build_action_packet,
     build_brightness_body,
@@ -547,3 +553,238 @@ class TestCasperGlow:
 
         assert result is True
         assert glow.state.is_charging is expected
+
+
+class TestHandshake:
+    """Tests for CasperGlow.handshake()."""
+
+    async def test_success_disconnects(self) -> None:
+        client = _make_mock_client()
+        glow = CasperGlow(_make_ble_device())
+
+        with patch("pycasperglow.device.establish_connection", return_value=client):
+            await glow.handshake()
+
+        client.disconnect.assert_called_once()
+
+    async def test_max_attempts_forwarded(self) -> None:
+        client = _make_mock_client()
+        glow = CasperGlow(_make_ble_device())
+
+        with patch(
+            "pycasperglow.device.establish_connection", return_value=client
+        ) as mock_connect:
+            await glow.handshake(max_attempts=1)
+
+        assert mock_connect.call_args.kwargs["max_attempts"] == 1
+
+    @pytest.mark.parametrize(
+        "error", [BleakError("Failed to connect after 4 attempt(s)"), TimeoutError()]
+    )
+    async def test_connect_failure_raises_connection_error(
+        self, error: Exception
+    ) -> None:
+        glow = CasperGlow(_make_ble_device())
+
+        with (
+            patch("pycasperglow.device.establish_connection", side_effect=error),
+            pytest.raises(ConnectionError) as exc_info,
+        ):
+            await glow.handshake()
+
+        assert exc_info.value.__cause__ is error
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            BleakError("notify failed"),
+            # A connectable non-Glow device lacks the characteristic; the probe
+            # must fail fast here rather than waiting for HANDSHAKE_TIMEOUT.
+            BleakCharacteristicNotFoundError(READ_CHAR_UUID),
+            EOFError(),
+            BrokenPipeError(),
+            TimeoutError(),
+        ],
+        ids=["bleak", "char_not_found", "eof", "broken_pipe", "timeout"],
+    )
+    async def test_gatt_failure_raises_connection_error_and_disconnects(
+        self, error: Exception
+    ) -> None:
+        client = _make_mock_client()
+        client.start_notify = AsyncMock(side_effect=error)
+        glow = CasperGlow(_make_ble_device())
+
+        with (
+            patch("pycasperglow.device.establish_connection", return_value=client),
+            patch("pycasperglow.device.HANDSHAKE_TIMEOUT", 30),
+            pytest.raises(ConnectionError) as exc_info,
+        ):
+            await asyncio.wait_for(glow.handshake(), 1)
+
+        assert exc_info.value.__cause__ is error
+        client.disconnect.assert_called_once()
+
+    async def test_timeout_raises_handshake_timeout_error(self) -> None:
+        client = AsyncMock()
+        glow = CasperGlow(_make_ble_device())
+
+        with (
+            patch("pycasperglow.device.establish_connection", return_value=client),
+            patch("pycasperglow.device.HANDSHAKE_TIMEOUT", 0),
+            pytest.raises(HandshakeTimeoutError),
+        ):
+            await glow.handshake()
+
+        client.disconnect.assert_called_once()
+
+    async def test_external_client_used_and_not_disconnected(self) -> None:
+        client = _make_mock_client()
+        glow = CasperGlow(_make_ble_device(), client=client)
+
+        with patch("pycasperglow.device.establish_connection") as mock_connect:
+            await glow.handshake()
+
+        mock_connect.assert_not_called()
+        client.start_notify.assert_called_once()
+        client.stop_notify.assert_called_once_with(READ_CHAR_UUID)
+        client.disconnect.assert_not_called()
+
+    async def test_external_client_not_unsubscribed_if_never_subscribed(
+        self,
+    ) -> None:
+        client = _make_mock_client()
+        client.start_notify = AsyncMock(side_effect=BleakError("notify failed"))
+        glow = CasperGlow(_make_ble_device(), client=client)
+
+        with pytest.raises(ConnectionError):
+            await glow.handshake()
+
+        client.stop_notify.assert_not_called()
+        client.disconnect.assert_not_called()
+
+    async def test_external_client_stop_notify_failure_is_swallowed(self) -> None:
+        client = _make_mock_client()
+        client.stop_notify = AsyncMock(side_effect=EOFError())
+        glow = CasperGlow(_make_ble_device(), client=client)
+
+        await glow.turn_on()
+
+        assert glow.state.is_on is True
+
+    async def test_external_client_reused_across_sessions(self) -> None:
+        client = _make_mock_client()
+        glow = CasperGlow(_make_ble_device(), client=client)
+
+        await glow.turn_on()
+        await glow.turn_off()
+
+        assert client.start_notify.call_count == 2
+        assert client.stop_notify.call_count == 2
+
+    async def test_waits_for_ble_lock(self) -> None:
+        client = _make_mock_client()
+        glow = CasperGlow(_make_ble_device())
+
+        with patch(
+            "pycasperglow.device.establish_connection", return_value=client
+        ) as mock_connect:
+            async with glow._ble_lock:
+                task = asyncio.create_task(glow.handshake())
+                await asyncio.sleep(0)
+                mock_connect.assert_not_called()
+            await task
+
+        mock_connect.assert_called_once()
+
+    async def test_disconnect_failure_does_not_mask_error(self) -> None:
+        client = _make_mock_client()
+        client.start_notify = AsyncMock(side_effect=BleakError("notify failed"))
+        client.disconnect = AsyncMock(side_effect=BleakError("already gone"))
+        glow = CasperGlow(_make_ble_device())
+
+        with (
+            patch("pycasperglow.device.establish_connection", return_value=client),
+            pytest.raises(ConnectionError, match="notify failed"),
+        ):
+            await glow.handshake()
+
+    async def test_disconnect_failure_after_success_is_swallowed(self) -> None:
+        client = _make_mock_client()
+        client.disconnect = AsyncMock(side_effect=EOFError())
+        glow = CasperGlow(_make_ble_device())
+
+        with patch("pycasperglow.device.establish_connection", return_value=client):
+            await glow.handshake()
+
+
+class TestCommandErrorWrapping:
+    """BLE failures in commands and state queries surface as library errors."""
+
+    @pytest.mark.parametrize("method", ["turn_on", "query_state"])
+    async def test_connect_failure_raises_connection_error(self, method: str) -> None:
+        error = BleakError("Failed to connect after 4 attempt(s)")
+        glow = CasperGlow(_make_ble_device())
+
+        with (
+            patch("pycasperglow.device.establish_connection", side_effect=error),
+            pytest.raises(ConnectionError) as exc_info,
+        ):
+            await getattr(glow, method)()
+
+        assert exc_info.value.__cause__ is error
+
+    @pytest.mark.parametrize("method", ["turn_on", "query_state"])
+    async def test_gatt_failure_raises_connection_error_and_disconnects(
+        self, method: str
+    ) -> None:
+        client = _make_mock_client()
+        client.start_notify = AsyncMock(side_effect=BleakError("notify failed"))
+        glow = CasperGlow(_make_ble_device())
+
+        with (
+            patch("pycasperglow.device.establish_connection", return_value=client),
+            pytest.raises(ConnectionError),
+        ):
+            await getattr(glow, method)()
+
+        client.disconnect.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "error",
+        [BleakError("write failed"), TimeoutError(), EOFError()],
+        ids=["bleak", "timeout", "eof"],
+    )
+    async def test_action_write_failure_raises_command_error(
+        self, error: Exception
+    ) -> None:
+        client = _make_mock_client()
+        original_write = client.write_gatt_char.side_effect
+
+        async def _write(char_uuid: str, data: bytes) -> None:
+            if data != RECONNECT_PACKET:
+                raise error
+            await original_write(char_uuid, data)
+
+        client.write_gatt_char = AsyncMock(side_effect=_write)
+        glow = CasperGlow(_make_ble_device())
+
+        with (
+            patch("pycasperglow.device.establish_connection", return_value=client),
+            pytest.raises(CommandError),
+        ):
+            await glow.turn_on()
+
+        assert glow.state.is_on is None
+        client.disconnect.assert_called_once()
+
+    async def test_disconnect_failure_does_not_mask_error(self) -> None:
+        client = _make_mock_client()
+        client.start_notify = AsyncMock(side_effect=BleakError("notify failed"))
+        client.disconnect = AsyncMock(side_effect=BleakError("already gone"))
+        glow = CasperGlow(_make_ble_device())
+
+        with (
+            patch("pycasperglow.device.establish_connection", return_value=client),
+            pytest.raises(ConnectionError, match="notify failed"),
+        ):
+            await glow.turn_on()
