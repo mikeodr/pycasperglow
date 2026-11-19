@@ -37,6 +37,7 @@ dev = [
     "pytest-cov",
     "mypy",
     "ruff",
+    "setuptools-scm>=8",
 ]
 
 [project.urls]
